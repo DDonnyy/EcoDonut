@@ -183,27 +183,30 @@ def combine_geometry(distributed: gpd.GeoDataFrame, impact_calculator=_calculate
 
 
 def evaluate_territory(eco_donut: gpd.GeoDataFrame, zone: Polygon = None):
+
     if zone is None:
         clip = eco_donut.copy()
         total_area = sum(clip.geometry.area)
     else:
         clip = gpd.clip(eco_donut, zone)
         total_area = zone.area
-    if (clip["layer_impact"] > 0).all():
-        return 5, clip
-    if (clip["layer_impact"] < 0).all():
-        return -5, clip
-    clip['impact_percent'] = clip.geometry.area / total_area
+
+    clip["impact_percent"] = clip.geometry.area / total_area
     mark = sum(clip["layer_impact"] * (clip.geometry.area / total_area))
 
-    if mark > 10:
-        return mark, 4, clip
-    if mark < -10:
-        return mark, -4, clip
+    if (clip["layer_impact"] > 0).all():
+        return mark, 5, clip
+    if (clip["layer_impact"] < 0).all():
+        return mark, -5, clip
 
     if mark > 6:
-        return mark, 3, clip
+        return mark, 4, clip
     if mark < -6:
+        return mark, -4, clip
+
+    if mark > 4:
+        return mark, 3, clip
+    if mark < -4:
         return mark, -3, clip
 
     if mark > 2:
