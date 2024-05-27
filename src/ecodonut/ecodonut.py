@@ -10,7 +10,7 @@ from shapely.wkt import loads, dumps
 
 
 def _positive_fading(layers_count, i) -> float:
-    sigmoid_value = math.exp(-(i - 0.5) * ((0.7 * math.e**2) / layers_count))
+    sigmoid_value = math.exp(-(i - 0.5) * ((0.7 * math.e ** 2) / layers_count))
     return sigmoid_value
 
 
@@ -24,7 +24,6 @@ def _combine_geodataframes(row: pd.Series, crs) -> gpd.GeoDataFrame:
 
 
 def _create_buffers(loc: pd.Series, resolution, positive_func, negative_func) -> gpd.GeoDataFrame:
-
     layers_count = int(loc.layers_count)
     # Calculation of each impact buffer
     radius_per_lvl = abs(round(loc.total_impact_radius / layers_count - 1, 2))
@@ -73,7 +72,7 @@ def _create_buffers(loc: pd.Series, resolution, positive_func, negative_func) ->
 
 
 def distribute_levels(
-    data: gpd.GeoDataFrame, resolution=4, positive_func=_positive_fading, negative_func=_negative_fading
+        data: gpd.GeoDataFrame, resolution=4, positive_func=_positive_fading, negative_func=_negative_fading
 ) -> gpd.GeoDataFrame:
     """
     Function to distribute the impact levels across the geometries in a GeoDataFrame.
@@ -112,7 +111,6 @@ def distribute_levels(
 
 
 def _polygons_to_linestring(geom):
-
     def convert_polygon(polygon: Polygon):
         lines = []
         exterior = LineString(polygon.exterior.coords)
@@ -134,15 +132,17 @@ def _polygons_to_linestring(geom):
 def _calculate_impact(impact_list: tuple) -> float:
     if len(impact_list) == 1:
         return impact_list[0]
-    total_impact = 0
-    for imp in impact_list:
-        if imp >= 0 and total_impact >= 0:
-            total_impact = np.sqrt(imp**2 + total_impact**2)
-        elif imp <= 0 and total_impact <= 0:
-            total_impact = -np.sqrt(imp**2 + total_impact**2)
-        else:
-            total_impact = imp + total_impact
-    return total_impact
+    positive_list = sorted([x for x in impact_list if x > 0])
+    negative_list = sorted([abs(x) for x in impact_list if x < 0])
+    total_positive = 0
+    for imp in positive_list:
+        total_positive = np.sqrt(imp ** 2 + total_positive ** 2)
+
+    total_negative = 0
+    for imp in negative_list:
+        total_negative = np.sqrt(imp ** 2 + total_negative ** 2)
+
+    return total_positive - total_negative
 
 
 def combine_geometry(distributed: gpd.GeoDataFrame, impact_calculator=_calculate_impact) -> gpd.GeoDataFrame:
@@ -183,7 +183,6 @@ def combine_geometry(distributed: gpd.GeoDataFrame, impact_calculator=_calculate
 
 
 def evaluate_territory(eco_donut: gpd.GeoDataFrame, zone: Polygon = None):
-
     if zone is None:
         clip = eco_donut.copy()
         total_area = sum(clip.geometry.area)
@@ -192,7 +191,7 @@ def evaluate_territory(eco_donut: gpd.GeoDataFrame, zone: Polygon = None):
         total_area = zone.area
 
     clip["impact_percent"] = clip.geometry.area / total_area
-    mark = sum(clip["layer_impact"] * (clip.geometry.area / total_area))
+    mark = sum(clip["layer_impact"] * clip["impact_percent"])
 
     if (clip["layer_impact"] > 0).all():
         return mark, 5, clip
