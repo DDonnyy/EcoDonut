@@ -10,7 +10,7 @@ from shapely.wkt import loads, dumps
 
 
 def _positive_fading(layers_count, i) -> float:
-    sigmoid_value = math.exp(-(i - 0.5) * ((0.7 * math.e ** 2) / layers_count))
+    sigmoid_value = math.exp(-(i - 0.5) * ((0.7 * math.e**2) / layers_count))
     return sigmoid_value
 
 
@@ -72,7 +72,7 @@ def _create_buffers(loc: pd.Series, resolution, positive_func, negative_func) ->
 
 
 def distribute_levels(
-        data: gpd.GeoDataFrame, resolution=4, positive_func=_positive_fading, negative_func=_negative_fading
+    data: gpd.GeoDataFrame, resolution=4, positive_func=_positive_fading, negative_func=_negative_fading
 ) -> gpd.GeoDataFrame:
     """
     Function to distribute the impact levels across the geometries in a GeoDataFrame.
@@ -136,11 +136,11 @@ def _calculate_impact(impact_list: tuple) -> float:
     negative_list = sorted([abs(x) for x in impact_list if x < 0])
     total_positive = 0
     for imp in positive_list:
-        total_positive = np.sqrt(imp ** 2 + total_positive ** 2)
+        total_positive = np.sqrt(imp**2 + total_positive**2)
 
     total_negative = 0
     for imp in negative_list:
-        total_negative = np.sqrt(imp ** 2 + total_negative ** 2)
+        total_negative = np.sqrt(imp**2 + total_negative**2)
 
     return total_positive - total_negative
 
@@ -182,7 +182,7 @@ def combine_geometry(distributed: gpd.GeoDataFrame, impact_calculator=_calculate
     return joined
 
 
-def evaluate_territory(eco_donut: gpd.GeoDataFrame, zone: Polygon = None):
+def evaluate_territory(eco_donut: gpd.GeoDataFrame, zone: Polygon = None) -> tuple[float, int, gpd.GeoDataFrame]:
     if zone is None:
         clip = eco_donut.copy()
         total_area = sum(clip.geometry.area)
@@ -198,17 +198,37 @@ def evaluate_territory(eco_donut: gpd.GeoDataFrame, zone: Polygon = None):
     if (clip["layer_impact"] < 0).all():
         return mark, -5, clip
 
-    if mark > 6:
+    clip["where_source"] = (
+        clip["source"]
+        .str.replace("(", "")
+        .str.replace(")", "")
+        .str.replace(" ", "")
+        .str.split(",")
+        .apply(lambda x: (True, x.index("True")) if "True" in x else (False, -1))
+    )
+    # bad_guys_sources = bad_guys_sources[bad_guys_sources.apply(lambda x: x[0]) == True]
+    bad_guys_sources = clip[clip["layer_impact"] < 0]
+    bad_guys_sources = bad_guys_sources['name']
+    print(bad_guys_sources)
+    if len(bad_guys_sources) > 0:
+        message = "В выделенную зону попал(о) {} источник(ов) негативного воздействия:".format(len(bad_guys_sources))
+        for i, source in enumerate(bad_guys_sources, start=1):
+            message += "\n{}. {}".format(i, source)
+    else:
+        message = "В выделенную зону не попало источников негативного воздействия."
+    print(message)
+
+    if mark > 4:
         return mark, 4, clip
     if mark < -6:
         return mark, -4, clip
 
-    if mark > 4:
+    if mark > 2:
         return mark, 3, clip
     if mark < -4:
         return mark, -3, clip
 
-    if mark > 2:
+    if mark > 1:
         return mark, 2, clip
     if mark < -2:
         return mark, -2, clip
