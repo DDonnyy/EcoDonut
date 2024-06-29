@@ -1,5 +1,5 @@
-import numpy as np
 import geopandas as gpd
+import numpy as np
 import pandas as pd
 from numpy import ndarray
 from shapely import Polygon
@@ -61,8 +61,7 @@ def merge_objs_by_buffer(gdf: gpd.GeoDataFrame, buffer: int) -> gpd.GeoDataFrame
     def unique_list(data):
         if len(list(data)) == 1:
             return data
-        else:
-            return list(data)
+        return list(data)
 
     crs = gdf.crs
     buffered = gpd.GeoDataFrame(
@@ -112,3 +111,19 @@ def calc_layer_count(gdf: gpd.GeoDataFrame, minv=2, maxv=10) -> ndarray:
     impacts = np.abs(gdf["total_impact_radius"])
     norm_impacts = min_max_normalization(impacts, minv, maxv)
     return np.round(norm_impacts)
+
+
+def project_points_into_polygons(
+    points: gpd.GeoDataFrame, polygons: gpd.GeoDataFrame, polygons_buff=10
+) -> gpd.GeoDataFrame:
+    assert points.crs == polygons.crs, "Non-matched crs"
+    assert points.crs != 4326, "Geographical crs"
+    assert polygons.crs != 4326, "Geographical crs"
+
+    polygons_buffered = polygons.copy()
+    polygons_buffered["geometry"] = polygons_buffered.geometry.buffer(polygons_buff)
+
+    intersect = gpd.sjoin(polygons_buffered, points, how="left").reset_index()
+    intersect = intersect.groupby("index").agg(list)
+    intersect["geometry"] = polygons.loc[intersect.index.values, "geometry"]
+    return intersect

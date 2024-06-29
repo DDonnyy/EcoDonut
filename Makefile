@@ -1,4 +1,4 @@
-CODE := src/dongraphio
+CODE := src/ecodonut
 
 build-and-publish: clean build publish
 
@@ -28,4 +28,4 @@ publish:
 	poetry publish
 
 install-from-build:
-	python -m wheel install dist/graph_lib-*.whl
+	python -m wheel install dist/ecodonut-*.whl
