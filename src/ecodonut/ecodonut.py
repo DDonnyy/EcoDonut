@@ -6,7 +6,15 @@ import pandas as pd
 from shapely import LineString, MultiLineString, MultiPolygon
 from shapely.geometry import Polygon
 from shapely.ops import polygonize
-from shapely.wkt import loads, dumps
+from shapely.wkt import dumps, loads
+
+NEGATIVE_WITHOUT_NAME = {
+    "'federal_road'": "Дорога федерального назначения",
+    "'railway'": "Железнодорожные пути",
+    "'regional_road'": "Дорога регионального назначения",
+}
+
+NEGATIVE_WITH_NAMES = {"'industrial'": "Промышленный объект", "'landfill'": "Свалка", "'petrol station'": "АЗС"}
 
 
 def _positive_fading(layers_count, i) -> float:
@@ -182,60 +190,121 @@ def combine_geometry(distributed: gpd.GeoDataFrame, impact_calculator=_calculate
     return joined
 
 
-def evaluate_territory(eco_donut: gpd.GeoDataFrame, zone: Polygon = None) -> tuple[float, int, gpd.GeoDataFrame]:
+def evaluate_territory(eco_donut: gpd.GeoDataFrame, zone: Polygon = None) -> tuple[float, int, str, gpd.GeoDataFrame]:
+    """
+    Evaluate the ecological impact of a specified territory.
+
+    Parameters
+    ----------
+    eco_donut : gpd.GeoDataFrame
+        A GeoPandas GeoDataFrame representing the ecological layers of the territory.
+    zone : Polygon, optional
+        A Shapely Polygon representing the specific zone within the territory to evaluate.
+        If None, evaluates all eco-frame. Defaults to None.
+
+    Returns
+    -------
+    tuple
+        A tuple containing the following elements:
+        - float: The absolute impact score of the territory.
+        - int: The ecological rating of the territory, ranging from 0 to 5.
+        - str: A descriptive message about the ecological impact and rating of the territory.
+        - gpd.GeoDataFrame: A GeoDataFrame with additional columns for impact percentages and source details.
+
+    Examples
+    --------
+    >>> eco_donut = gpd.read_file('path_to_your_file.geojson') # Eco-Frame
+    >>> abs_mark, rating, description, result_gdf = evaluate_territory(eco_donut)
+    """
     if zone is None:
         clip = eco_donut.copy()
         total_area = sum(clip.geometry.area)
     else:
         clip = gpd.clip(eco_donut, zone)
-        total_area = zone.area
+        total_area = sum(clip.geometry.area)
 
     clip["impact_percent"] = clip.geometry.area / total_area
-    mark = sum(clip["layer_impact"] * clip["impact_percent"])
-
-    if (clip["layer_impact"] > 0).all():
-        return mark, 5, clip
-    if (clip["layer_impact"] < 0).all():
-        return mark, -5, clip
+    abs_mark = sum(clip["layer_impact"] * clip["impact_percent"])
 
     clip["where_source"] = (
         clip["source"]
-        .str.replace("(", "")
-        .str.replace(")", "")
         .str.replace(" ", "")
         .str.split(",")
         .apply(lambda x: (True, x.index("True")) if "True" in x else (False, -1))
     )
-    # bad_guys_sources = bad_guys_sources[bad_guys_sources.apply(lambda x: x[0]) == True]
-    bad_guys_sources = clip[clip["layer_impact"] < 0]
-    bad_guys_sources = bad_guys_sources['name']
-    print(bad_guys_sources)
+    # in case we need only negative impacts in bad guys
+    # bad_guys_sources = clip[(clip["where_source"].apply(lambda x: x[1]) != -1) & (clip["layer_impact"] <= 0)]
+    bad_guys_sources = clip[(clip["where_source"].apply(lambda x: x[1]) != -1)]
+
+    def filter_bad_guys(loc):
+        if loc[0] in NEGATIVE_WITH_NAMES or loc[0] in NEGATIVE_WITHOUT_NAME:
+            return True
+        return False
+
+    def eval_bad_guys(loc):
+        if loc[0] in NEGATIVE_WITH_NAMES:
+            return NEGATIVE_WITH_NAMES.get(loc[0]) + " : " + loc[1]
+        return NEGATIVE_WITHOUT_NAME.get(loc[0])
+
+    bad_guys_sources = bad_guys_sources.apply(
+        lambda x: (x["type"].split(",")[x.where_source[1]].lstrip(), x["name"].split(",")[x.where_source[1]].lstrip()),
+        axis=1,
+    )
+    bad_guys_sources = bad_guys_sources.drop_duplicates()
+    bad_guys_sources = bad_guys_sources[bad_guys_sources.apply(filter_bad_guys)].apply(eval_bad_guys)
+    clip.drop(columns=["impact_percent", "where_source"], inplace=True)
     if len(bad_guys_sources) > 0:
-        message = "В выделенную зону попал(о) {} источник(ов) негативного воздействия:".format(len(bad_guys_sources))
+        add_message = f"\nНа проектной территории есть {len(bad_guys_sources)} источник(ов) негативного воздействия:"
         for i, source in enumerate(bad_guys_sources, start=1):
-            message += "\n{}. {}".format(i, source)
+            add_message += f"\n{i}. {source}"
     else:
-        message = "В выделенную зону не попало источников негативного воздействия."
-    print(message)
+        add_message = "\nИсточников негативного воздействия на проектной территории нет."
 
-    if mark > 4:
-        return mark, 4, clip
-    if mark < -6:
-        return mark, -4, clip
+    if (clip["layer_impact"] > 0).all():
+        desc = (
+            "Проектная территория имеет оценку 5 баллов по экологическому каркасу. Территория находится в зоне "
+            "влияния объектов, оказывающих только положительное влияние на окружающую среду."
+        )
+        return abs_mark, 5, desc, clip
 
-    if mark > 2:
-        return mark, 3, clip
-    if mark < -4:
-        return mark, -3, clip
+    if (clip["layer_impact"] < 0).all():
+        desc = (
+            "Проектная территория имеет оценку 0 баллов по экологическому каркасу. Территория находится в зоне "
+            "влияния объектов, оказывающих только отрицательное влияние на окружающую среду."
+        )
+        desc += add_message
+        return abs_mark, 0, desc, clip
 
-    if mark > 1:
-        return mark, 2, clip
-    if mark < -2:
-        return mark, -2, clip
+    if abs_mark >= 2:
+        desc = (
+            "Проектная территория имеет оценку 4 балла по экологическому каркасу. Территория находится "
+            "преимущественно в зоне влияния объектов, оказывающих положительное влияние на окружающую среду."
+        )
+        desc += add_message
+        return abs_mark, 4, desc, clip
 
-    if mark > 0:
-        return mark, 1, clip
-    if mark < 0:
-        return mark, -1, clip
+    if abs_mark >= 0:
+        desc = (
+            "Проектная территория имеет оценку 3 балла по экологическому каркасу. Территория находится в "
+            "нейтральной зоне влияния объектов, положительное влияние оказывает большее воздействие чем "
+            "отрицательное."
+        )
+        desc += add_message
+        return abs_mark, 3, desc, clip
 
-    return
+    if abs_mark >= -4:
+        desc = (
+            "Проектная территория имеет оценку 2 балла по экологическому каркасу. Территория находится в "
+            "нейтральной зоне влияния объектов, отрицательное влияние оказывает большее воздействие чем "
+            "положительное."
+        )
+        desc += add_message
+        return abs_mark, 2, desc, clip
+
+    if abs_mark < -4:
+        desc = (
+            "Проектная территория имеет оценку 1 балл по экологическому каркасу. Территория находится "
+            "преимущественно в зоне влияния объектов, оказывающих негативное влияние на окружающую среду."
+        )
+        desc += add_message
+        return abs_mark, 1, desc, clip
