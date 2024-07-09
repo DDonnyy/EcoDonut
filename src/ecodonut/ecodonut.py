@@ -190,7 +190,7 @@ def combine_geometry(distributed: gpd.GeoDataFrame, impact_calculator=_calculate
     return joined
 
 
-def evaluate_territory(eco_donut: gpd.GeoDataFrame, zone: Polygon = None) -> tuple[float, int, str, gpd.GeoDataFrame]:
+def evaluate_territory(eco_donut: gpd.GeoDataFrame, zone: Polygon = None) -> tuple[float, float, str, gpd.GeoDataFrame]:
     """
     Evaluate the ecological impact of a specified territory.
 
@@ -222,9 +222,14 @@ def evaluate_territory(eco_donut: gpd.GeoDataFrame, zone: Polygon = None) -> tup
     else:
         clip = gpd.clip(eco_donut, zone)
         total_area = sum(clip.geometry.area)
+    if clip.empty:
+        desc = (
+            "В границах проектной территории нет данных об объектах оказывающих влияние на экологию"
+        )
+        return 0, -1, desc, clip
 
     clip["impact_percent"] = clip.geometry.area / total_area
-    abs_mark = sum(clip["layer_impact"] * clip["impact_percent"])
+    abs_mark = round(sum(clip["layer_impact"] * clip["impact_percent"]), 2)
 
     clip["where_source"] = (
         clip["source"]
@@ -283,20 +288,29 @@ def evaluate_territory(eco_donut: gpd.GeoDataFrame, zone: Polygon = None) -> tup
         desc += add_message
         return abs_mark, 4, desc, clip
 
-    if abs_mark >= 0:
+    if abs_mark > 0:
         desc = (
-            "Проектная территория имеет оценку 3 балла по экологическому каркасу. Территория находится в "
-            "нейтральной зоне влияния объектов, положительное влияние оказывает большее воздействие чем "
-            "отрицательное."
+            "Проектная территория имеет оценку 3 балла по экологическому каркасу. Территория находится в зоне влияния "
+            "как положительных, так и отрицательных объектов, однако положительное влияние оказывает большее "
+            "воздействие чем отрицательное."
         )
         desc += add_message
         return abs_mark, 3, desc, clip
 
+    if abs_mark == 0:
+        desc = (
+            "Проектная территория имеет оценку 2.5 балла по экологическому каркасу. Территория находится в зоне "
+            "влияния как положительных, так и отрицательных объектов, однако положительные и негативные влияния "
+            "компенсируют друг друга."
+        )
+        desc += add_message
+        return abs_mark, 2.5, desc, clip
+
     if abs_mark >= -4:
         desc = (
-            "Проектная территория имеет оценку 2 балла по экологическому каркасу. Территория находится в "
-            "нейтральной зоне влияния объектов, отрицательное влияние оказывает большее воздействие чем "
-            "положительное."
+            "Проектная территория имеет оценку 2 балла по экологическому каркасу. Территория находится в зоне влияния "
+            "как положительных, так и отрицательных объектов, однако отрицательное влияние оказывает большее "
+            "воздействие чем положительное."
         )
         desc += add_message
         return abs_mark, 2, desc, clip
