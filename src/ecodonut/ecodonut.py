@@ -1,4 +1,5 @@
 import math
+from typing import Any
 
 import geopandas as gpd
 import numpy as np
@@ -18,7 +19,7 @@ NEGATIVE_WITH_NAMES = {"'industrial'": "Промышленный объект", 
 
 
 def _positive_fading(layers_count, i) -> float:
-    sigmoid_value = math.exp(-(i - 0.5) * ((0.7 * math.e**2) / layers_count))
+    sigmoid_value = math.exp(-(i - 0.5) * ((0.7 * math.e ** 2) / layers_count))
     return sigmoid_value
 
 
@@ -80,7 +81,7 @@ def _create_buffers(loc: pd.Series, resolution, positive_func, negative_func) ->
 
 
 def distribute_levels(
-    data: gpd.GeoDataFrame, resolution=4, positive_func=_positive_fading, negative_func=_negative_fading
+        data: gpd.GeoDataFrame, resolution=4, positive_func=_positive_fading, negative_func=_negative_fading
 ) -> gpd.GeoDataFrame:
     """
     Function to distribute the impact levels across the geometries in a GeoDataFrame.
@@ -144,11 +145,11 @@ def _calculate_impact(impact_list: tuple) -> float:
     negative_list = sorted([abs(x) for x in impact_list if x < 0])
     total_positive = 0
     for imp in positive_list:
-        total_positive = np.sqrt(imp**2 + total_positive**2)
+        total_positive = np.sqrt(imp ** 2 + total_positive ** 2)
 
     total_negative = 0
     for imp in negative_list:
-        total_negative = np.sqrt(imp**2 + total_negative**2)
+        total_negative = np.sqrt(imp ** 2 + total_negative ** 2)
 
     return total_positive - total_negative
 
@@ -190,7 +191,7 @@ def combine_geometry(distributed: gpd.GeoDataFrame, impact_calculator=_calculate
     return joined
 
 
-def evaluate_territory(eco_donut: gpd.GeoDataFrame, zone: Polygon = None) -> tuple[float, float, str, gpd.GeoDataFrame]:
+def evaluate_territory(eco_donut: gpd.GeoDataFrame, zone: Polygon = None) -> dict[str:Any]:
     """
     Evaluate the ecological impact of a specified territory.
 
@@ -204,17 +205,17 @@ def evaluate_territory(eco_donut: gpd.GeoDataFrame, zone: Polygon = None) -> tup
 
     Returns
     -------
-    tuple
-        A tuple containing the following elements:
-        - float: The absolute impact score of the territory.
-        - int: The ecological rating of the territory, ranging from 0 to 5.
-        - str: A descriptive message about the ecological impact and rating of the territory.
-        - gpd.GeoDataFrame: A GeoDataFrame with additional columns for impact percentages and source details.
-
+    dict[str, Any]
+        A dict containing the following elements:
+        - 'absolute mark' (float): The absolute impact score of the territory.
+        - 'absolute mark description' (float): A descriptive message about objects inside the territory.
+        - 'relative mark' (float): The ecological rating of the territory, ranging from 0 to 5.
+        - 'relative mark description' (float): A descriptive message about the ecological impact and rating of the territory.
+        - 'clipped ecodonut' (gpd.GeoDataFrame): Clipped GeoDataFrame ith additional columns for impact percentages and source details.
     Examples
     --------
     >>> eco_donut = gpd.read_file('path_to_your_file.geojson') # Eco-Frame
-    >>> abs_mark, rating, description, result_gdf = evaluate_territory(eco_donut)
+    >>> result = evaluate_territory(eco_donut)
     """
     if zone is None:
         clip = eco_donut.copy()
@@ -259,34 +260,45 @@ def evaluate_territory(eco_donut: gpd.GeoDataFrame, zone: Polygon = None) -> tup
     bad_guys_sources = bad_guys_sources[bad_guys_sources.apply(filter_bad_guys)].apply(eval_bad_guys)
     clip.drop(columns=["impact_percent", "where_source"], inplace=True)
     if len(bad_guys_sources) > 0:
-        add_message = f"\nНа проектной территории есть {len(bad_guys_sources)} источник(ов) негативного воздействия:"
+        obj_message = f"На проектной территории есть {len(bad_guys_sources)} источник(а/ов) негативного воздействия:"
         for i, source in enumerate(bad_guys_sources, start=1):
-            add_message += f"\n{i}. {source}"
+            obj_message += f"\n{i}. {source}"
     else:
-        add_message = "\nИсточников негативного воздействия на проектной территории нет."
+        obj_message = "\nИсточников негативного воздействия на проектной территории нет."
 
     if (clip["layer_impact"] > 0).all():
         desc = (
             "Проектная территория имеет оценку 5 баллов по экологическому каркасу. Территория находится в зоне "
             "влияния объектов, оказывающих только положительное влияние на окружающую среду."
         )
-        return abs_mark, 5, desc, clip
+        return {'absolute mark': abs_mark,
+                'absolute mark description': obj_message,
+                'relative mark': 5,
+                'relative mark description': desc,
+                'clipped ecodonut': clip}
 
     if (clip["layer_impact"] < 0).all():
         desc = (
             "Проектная территория имеет оценку 0 баллов по экологическому каркасу. Территория находится в зоне "
             "влияния объектов, оказывающих только отрицательное влияние на окружающую среду."
         )
-        desc += add_message
-        return abs_mark, 0, desc, clip
+        return {'absolute mark': abs_mark,
+                'absolute mark description': obj_message,
+                'relative mark': 0,
+                'relative mark description': desc,
+                'clipped ecodonut': clip}
 
     if abs_mark >= 2:
         desc = (
             "Проектная территория имеет оценку 4 балла по экологическому каркасу. Территория находится "
             "преимущественно в зоне влияния объектов, оказывающих положительное влияние на окружающую среду."
         )
-        desc += add_message
-        return abs_mark, 4, desc, clip
+
+        return {'absolute mark': abs_mark,
+                'absolute mark description': obj_message,
+                'relative mark': 4,
+                'relative mark description': desc,
+                'clipped ecodonut': clip}
 
     if abs_mark > 0:
         desc = (
@@ -294,8 +306,12 @@ def evaluate_territory(eco_donut: gpd.GeoDataFrame, zone: Polygon = None) -> tup
             "как положительных, так и отрицательных объектов, однако положительное влияние оказывает большее "
             "воздействие чем отрицательное."
         )
-        desc += add_message
-        return abs_mark, 3, desc, clip
+
+        return {'absolute mark': abs_mark,
+                'absolute mark description': obj_message,
+                'relative mark': 3,
+                'relative mark description': desc,
+                'clipped ecodonut': clip}
 
     if abs_mark == 0:
         desc = (
@@ -303,8 +319,12 @@ def evaluate_territory(eco_donut: gpd.GeoDataFrame, zone: Polygon = None) -> tup
             "влияния как положительных, так и отрицательных объектов, однако положительные и негативные влияния "
             "компенсируют друг друга."
         )
-        desc += add_message
-        return abs_mark, 2.5, desc, clip
+
+        return {'absolute mark': abs_mark,
+                'absolute mark description': obj_message,
+                'relative mark': 2.5,
+                'relative mark description': desc,
+                'clipped ecodonut': clip}
 
     if abs_mark >= -4:
         desc = (
@@ -312,13 +332,21 @@ def evaluate_territory(eco_donut: gpd.GeoDataFrame, zone: Polygon = None) -> tup
             "как положительных, так и отрицательных объектов, однако отрицательное влияние оказывает большее "
             "воздействие чем положительное."
         )
-        desc += add_message
-        return abs_mark, 2, desc, clip
+
+        return {'absolute mark': abs_mark,
+                'absolute mark description': obj_message,
+                'relative mark': 2,
+                'relative mark description': desc,
+                'clipped ecodonut': clip}
 
     if abs_mark < -4:
         desc = (
             "Проектная территория имеет оценку 1 балл по экологическому каркасу. Территория находится "
             "преимущественно в зоне влияния объектов, оказывающих негативное влияние на окружающую среду."
         )
-        desc += add_message
-        return abs_mark, 1, desc, clip
+
+        return {'absolute mark': abs_mark,
+                'absolute mark description': obj_message,
+                'relative mark': 1,
+                'relative mark description': desc,
+                'clipped ecodonut': clip}
