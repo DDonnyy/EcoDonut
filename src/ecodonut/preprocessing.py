@@ -114,7 +114,7 @@ def calc_layer_count(gdf: gpd.GeoDataFrame, minv=2, maxv=10) -> ndarray:
 
 
 def project_points_into_polygons(
-    points: gpd.GeoDataFrame, polygons: gpd.GeoDataFrame, polygons_buff=10
+        points: gpd.GeoDataFrame, polygons: gpd.GeoDataFrame, polygons_buff=10
 ) -> gpd.GeoDataFrame:
     assert points.crs == polygons.crs, "Non-matched crs"
     assert points.crs != 4326, "Geographical crs"
@@ -127,3 +127,63 @@ def project_points_into_polygons(
     intersect = intersect.groupby("index").agg(list)
     intersect["geometry"] = polygons.loc[intersect.index.values, "geometry"]
     return intersect
+
+
+def industrial_preprocessing(gdf_dangerous_objects_points: gpd.GeoDataFrame,
+                             gdf_industrial_polygons: gpd.GeoDataFrame,
+                             merge_buffer: int = 100,
+                             dangerous_level_column='dangerous_level'
+                             ) -> gpd.GeoDataFrame:
+    def remove_nulls(x):
+        if isinstance(x, list):
+            x = [item for item in x if pd.notnull(item)]
+            if len(x) == 0:
+                return None
+            if len(x) == 1:
+                return x[0]
+        return x
+
+    gdf_dangerous_objects_points = gdf_dangerous_objects_points.copy()
+    gdf_industrial_polygons = gdf_industrial_polygons.copy()
+
+    gdf_dangerous_objects_points['geometry'] = gdf_dangerous_objects_points.geometry
+    gdf_industrial_polygons['geometry'] = gdf_industrial_polygons.geometry
+
+    estimated_crs = gdf_dangerous_objects_points.estimate_utm_crs()
+
+    gdf_dangerous_objects_points.to_crs(estimated_crs, inplace=True)
+
+    gdf_dangerous_objects_points = gdf_dangerous_objects_points[
+        gdf_dangerous_objects_points['name'].str.upper().str.contains(
+            'ПОЛИГОН|ЗАВОД|ТБО|ТКО|ЦЕХ|КОТЕЛЬНАЯ|РУДНИК|КАНАЛ|КАРЬЕР|СТАНЦИЯ|ПРОИЗВОД|ПРОМЫШЛЕН')]
+
+    gdf_dangerous_objects_points = gdf_dangerous_objects_points.filter(
+        items=['name', 'geometry', dangerous_level_column])
+
+    gdf_industrial_polygons.to_crs(estimated_crs, inplace=True)
+    gdf_industrial_polygons = gdf_industrial_polygons.filter(items=['name', 'geometry'])
+
+    gdf_industrial_polygons = merge_objs_by_buffer(gdf_industrial_polygons, merge_buffer)
+
+    gdf_industrial_polygons['name'] = gdf_industrial_polygons['name'].apply(remove_nulls)
+
+    union = project_points_into_polygons(gdf_dangerous_objects_points, gdf_industrial_polygons)
+
+    union[['name', dangerous_level_column]] = union.apply(lambda row: pd.Series(
+        max(list(zip(row['name_right'], row['dangerous_level'])), key=lambda x: (-x[1], len(str(x[0]))))), axis=1)
+
+    union['name'] = union.apply(lambda row: row['name'] if pd.notna(row['name']) else (
+        row.name_left[0] if len(row.name_left) == 1 else row.name_left), axis=1)
+    union.dropna(subset='name', inplace=True)
+    union.drop(columns=['name_left', 'name_right', 'index_right'], inplace=True)
+    union['type'] = 'industrial'
+    union['dangerous_level'] = union['dangerous_level'].fillna(4)
+    union['initial_impact'] = union.apply(lambda x: -10 if x.dangerous_level == 1 else (
+        -8 if x.dangerous_level == 2 else (-6 if x.dangerous_level == 3 else -4)), axis=1)
+    union['fading'] = union.apply(lambda x: 0.8 if x.dangerous_level == 1 else (
+        0.6 if x.dangerous_level == 2 else (0.4 if x.dangerous_level == 3 else 0.2)), axis=1)
+    union['total_impact_radius'] = 1000 * union['initial_impact'] * union['fading']
+    union = gpd.GeoDataFrame(union, crs=estimated_crs)
+    union = union.loc[~union['geometry'].is_empty]
+    union = union[~union['geometry'].duplicated()]
+    return union
