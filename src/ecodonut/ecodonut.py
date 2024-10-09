@@ -196,7 +196,7 @@ class EcoDonut:
         return joined
 
 
-    def evaluate_territory(self, zone: Polygon = None) -> dict[str:Any]:
+    def evaluate_territory(self,eco_donut:gpd.GeoDataFrame, zone: Polygon = None) -> dict[str:Any]:
         """
         Evaluate the ecological impact of a specified territory.
 
@@ -220,6 +220,7 @@ class EcoDonut:
         >>>  # Eco-Frame #TODO
         >>>
         """
+        #TODO add crs check
         if zone is None:
             clip = eco_donut.copy()
             total_area = sum(clip.geometry.area)
@@ -230,7 +231,11 @@ class EcoDonut:
             desc = (
                 "В границах проектной территории нет данных об объектах оказывающих влияние на экологию"
             )
-            return 0, -1, desc, clip
+            return {'absolute mark': 0,
+                    'absolute mark description': '-',
+                    'relative mark': 0,
+                    'relative mark description': desc,
+                    'clipped ecodonut': clip}
 
         clip["impact_percent"] = clip.geometry.area / total_area
         abs_mark = round(sum(clip["layer_impact"] * clip["impact_percent"]), 2)
