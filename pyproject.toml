@@ -16,6 +16,8 @@ matplotlib = "^3.8.4"
 mapclassify = "^2.6.1"
 tqdm = "^4.66.2"
 folium = "^0.16.0"
+dask = "^2024.10.0"
+networkx = "^3.3"
 
 [tool.poetry.group.dev.dependencies]
 black = "^24.2.0"

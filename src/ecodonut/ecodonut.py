@@ -1,13 +1,21 @@
 import math
-from typing import Any
+from typing import Any, Tuple
 
 import geopandas as gpd
 import numpy as np
 import pandas as pd
+from geopandas import GeoSeries
+from numpy import ndarray
 from shapely import LineString, MultiLineString, MultiPolygon
 from shapely.geometry import Polygon
+from shapely.geometry.base import BaseGeometry
 from shapely.ops import polygonize
 from shapely.wkt import dumps, loads
+from dataclasses import dataclass, field
+from typing import Callable, Dict
+
+from ecodonut.preprocessing import min_max_normalization
+from ecodonut.utils import polygons_to_linestring
 
 NEGATIVE_WITHOUT_NAME = {
     "'federal_road'": "Дорога федерального назначения",
@@ -17,12 +25,39 @@ NEGATIVE_WITHOUT_NAME = {
 NEGATIVE_WITH_NAMES = {"'industrial'": "Промышленный объект", "'landfill'": "Свалка", "'petrol station'": "АЗС"}
 
 
-def _positive_fading(layers_count, i) -> float:
+@dataclass
+class LayerOptions:
+    initial_impact: int
+    fading: float
+    geom_func: Callable[[BaseGeometry], BaseGeometry] = field(default=lambda x: x)
+    area_normalization: Callable[[ndarray], ndarray] = field(default=lambda _: 1.0)
+    do_buffer: bool = True
+    geometry_union: bool = False
+
+
+default_layers_options: Dict[str, LayerOptions] = {
+    "industrial": LayerOptions(initial_impact=-4, fading=0.2),
+    "gas_station": LayerOptions(initial_impact=-4, fading=0.15, geom_func=lambda x: x.buffer(50)),
+    "landfill": LayerOptions(initial_impact=-3, fading=0.4,
+                             area_normalization=lambda x: min_max_normalization(np.sqrt(x), 1, 10)),
+    "regional_roads": LayerOptions(initial_impact=-2, fading=0.1, geom_func=lambda x: x.buffer(20),
+                                   geometry_union=True),
+    "federal_roads": LayerOptions(initial_impact=-4, fading=0.2, geom_func=lambda x: x.buffer(30), geometry_union=True),
+    "railway": LayerOptions(initial_impact=-3, fading=0.15, geom_func=lambda x: x.buffer(30), geometry_union=True),
+    "rivers": LayerOptions(initial_impact=3, fading=0.1, geom_func=lambda x: x.buffer(50)),
+    "nature_reserve": LayerOptions(initial_impact=-4, fading=0.2),
+    "water": LayerOptions(initial_impact=-4, fading=0.15,
+                          area_normalization=lambda x: min_max_normalization(np.sqrt(x), 1, 5)),
+    "woods": LayerOptions(initial_impact=3, fading=0.15, do_buffer=False),
+}
+
+
+def _positive_fading(layers_count: int, i: int) -> float:
     sigmoid_value = math.exp(-(i - 0.5) * ((0.7 * math.e ** 2) / layers_count))
     return sigmoid_value
 
 
-def _negative_fading(layers_count, i) -> float:
+def _negative_fading(layers_count: int, i: int) -> float:
     sigmoid_value = 1 / (1 + math.exp(10 / layers_count * (i - 0.5 - (layers_count / 2))))
     return sigmoid_value
 
@@ -43,142 +78,43 @@ def _calculate_impact(impact_list: tuple) -> float:
     return total_positive - total_negative
 
 
-class EcoDonut:
-    def __init__(self):
-        self.positive_fading_func = _positive_fading
-        self.negative_fading_func = _negative_fading
-        self.impact_calculator = _calculate_impact
+class EcoFrame:
+    def __init__(self,
+                 layer_options: Dict[str, LayerOptions] = None,
+                 positive_fading_func: Callable[[int, int], float] = _positive_fading,
+                 negative_fading_func: Callable[[int, int], float] = _negative_fading,
+                 impact_calculator: Callable[[Tuple[float, ...]], float] = _calculate_impact):
+        if layer_options is None:
+            layer_options = default_layers_options
+        self.layer_options = layer_options
+        self.positive_fading_func = positive_fading_func
+        self.negative_fading_func = negative_fading_func
+        self.impact_calculator = impact_calculator
 
-    @staticmethod
-    def _polygons_to_linestring(geom):
-        def convert_polygon(polygon: Polygon):
-            lines = []
-            exterior = LineString(polygon.exterior.coords)
-            lines.append(exterior)
-            interior = [LineString(p.coords) for p in polygon.interiors]
-            lines = lines + interior
-            return lines
+    def evaluate_ecoframe(self, eco_layers: Dict[str, gpd.GeoDataFrame]):
+        for layer_name, eco_layer in eco_layers.items():
+            if layer_name not in self.layer_options:
+                raise RuntimeError(f"{layer_name} is not provided in layer options")
 
-        def convert_multipolygon(polygon: MultiPolygon):
-            return MultiLineString(sum([convert_polygon(p) for p in polygon.geoms], []))
+            if layer_name == 'industrial':
+                start_initial = self.layer_options['industrial'].initial_impact
+                eco_layer['initial_impact'] = eco_layer.apply(
+                    lambda x: start_initial * 2.5 if x.dangerous_level == 1 else (
+                        start_initial * 2 if x.dangerous_level == 2 else (
+                            start_initial * 1.5 if x.dangerous_level == 3 else start_initial)), axis=1)
 
-        if geom.geom_type == "Polygon":
-            return MultiLineString(convert_polygon(geom))
-        if geom.geom_type == "MultiPolygon":
-            return convert_multipolygon(geom)
-        return geom
-
-    @staticmethod
-    def _combine_geodataframes(row: pd.Series, crs) -> gpd.GeoDataFrame:
-        return gpd.GeoDataFrame(pd.concat(row.tolist(), ignore_index=True), geometry="geometry", crs=crs)
-
-    @staticmethod
-    def _create_buffers(loc: pd.Series, resolution, positive_func, negative_func) -> gpd.GeoDataFrame:
-        layers_count = int(loc.layers_count)
-        # Calculation of each impact buffer
-        radius_per_lvl = abs(round(loc.total_impact_radius / layers_count - 1, 2))
-
-        initial_impact = loc.initial_impact
-
-        # Calculating the impact at each level
-        each_lvl_impact = {}
-
-        if initial_impact > 0:
-            for i in range(1, layers_count):
-                each_lvl_impact[i] = positive_func(layers_count, i) * initial_impact
-        else:
-            for i in range(1, layers_count):
-                each_lvl_impact[i] = negative_func(layers_count, i) * initial_impact
-
-        loc["layer_impact"] = initial_impact
-        loc["source"] = True
-
-        # Creating source level
-        distributed_df = pd.DataFrame()
-        distributed_df = pd.concat(
-            [distributed_df, loc[["name", "type", "layer_impact", "source", "geometry"]].to_frame().T]
-        )
-
-        initial_geom = loc["geometry"]
-        to_cut = initial_geom
-        new_layer = loc.copy()
-
-        radius = 0
-
-        for i in range(1, layers_count):
-            radius = radius + radius_per_lvl
-            impact = each_lvl_impact.get(i)
-            new_layer["layer_impact"] = round(impact, 2)
-            new_layer["source"] = False
-            loc_df = gpd.GeoDataFrame(
-                new_layer[["name", "type", "layer_impact", "source", "geometry"]].to_frame().T, geometry="geometry"
-            )
-            to_cut_temp = initial_geom.buffer(radius, resolution=resolution)
-            loc_df["geometry"] = to_cut_temp.difference(to_cut)
-            to_cut = to_cut_temp
-            distributed_df = pd.concat([distributed_df, loc_df])
-
-        return gpd.GeoDataFrame(distributed_df, geometry="geometry").reset_index(drop=True)
-
-    def distribute_levels(self, data: gpd.GeoDataFrame, resolution=4) -> gpd.GeoDataFrame:
-        """
-        Function to distribute the impact levels across the geometries in a GeoDataFrame.
-
-        Parameters
-        ----------
-        data: gpd.GeoDataFrame
-            A GeoPandas GeoDataFrame that contains the geometries and their corresponding impact levels.
-            The GeoDataFrame must have the following attributes:
-            1. "total_impact_radius": The total radius of impact for each geometry.
-            2. "layers_count": The number of layers of impact for each geometry.
-            3. "initial_impact": The initial impact level for each geometry.
-        resolution: int, optional
-            The resolution to use when creating buffers. Defaults to 4.
-        positive_func: function, optional
-            A function to calculate the impact for positive initial impacts. Defaults to _positive_fading.
-        negative_func: function, optional
-            A function to calculate the impact for negative initial impacts. Defaults to _negative_fading.
-
-        Returns
-        -------
-        gpd.GeoDataFrame
-            A GeoDataFrame containing the distributed impact levels across the geometries.
-
-        Examples
-        --------
-        >>> gdf = gpd.read_file('path_to_your_file.geojson')
-        >>> result = distribute_levels(gdf, resolution=4)
-        """
-
-        crs = data.crs
-        distributed = data.copy().apply(
-            self._create_buffers, resolution=resolution, positive_func=self.positive_fading_func,
-            negative_func=self.negative_fading_func,
-            axis=1
-        )
-        return self._combine_geodataframes(distributed, crs)
+                start_fading = self.layer_options['fading'].fading
+                eco_layer['fading'] = eco_layer.apply(
+                    lambda x: start_fading * 4 if x.dangerous_level == 1 else (
+                        start_fading * 3 if x.dangerous_level == 2 else (
+                            start_fading * 2 if x.dangerous_level == 3 else start_fading)), axis=1)
+            else:
+                eco_layer['initial_impact'] = self.layer_options[layer_name].initial_impact
+                eco_layer['fading'] = self.layer_options[layer_name].fading
 
     def combine_geometry(self, distributed: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-        """
-        Combine geometry of distributed layers into a single GeoDataFrame.
-        Parameters
-        ----------
-        distributed: gpd.GeoDataFrame
-            A GeoPandas GeoDataFrame that contains the distributed layers.
-        impact_calculator: function, optional
-            A function to calculate the impact. Defaults to _calculate_impact.
 
-        Returns
-        -------
-        gpd.GeoDataFrame
-            The combined GeoDataFrame with aggregated geometry.
-
-        Examples
-        --------
-        >>> gdf = gpd.read_file('path_to_your_file.geojson')
-        >>> result = combine_geometry(gdf)
-        """
-        polygons = polygonize(distributed["geometry"].apply(self._polygons_to_linestring).unary_union)
+        polygons = polygonize(distributed["geometry"].apply(polygons_to_linestring).unary_union)
         enclosures = gpd.GeoSeries(list(polygons), crs=distributed.crs)
         enclosures_points = gpd.GeoDataFrame(enclosures.representative_point(), columns=["geometry"],
                                              crs=enclosures.crs)
@@ -195,32 +131,17 @@ class EcoDonut:
 
         return joined
 
+    def distribute_levels(self, data: gpd.GeoDataFrame, resolution=4) -> gpd.GeoDataFrame:
 
-    def evaluate_territory(self,eco_donut:gpd.GeoDataFrame, zone: Polygon = None) -> dict[str:Any]:
-        """
-        Evaluate the ecological impact of a specified territory.
+        crs = data.crs
+        distributed = data.copy().apply(
+            _create_buffers, resolution=resolution, positive_func=self.positive_fading_func,
+            negative_func=self.negative_fading_func,
+            axis=1
+        )
+        return _combine_geodataframes(distributed, crs)
 
-        Parameters
-        ----------
-        zone : Polygon, optional
-            A Shapely Polygon representing the specific zone within the territory to evaluate.
-            If None, evaluates all eco-frame. Defaults to None.
-
-        Returns
-        -------
-        dict[str, Any]
-            A dict containing the following elements:
-            - 'absolute mark' (float): The absolute impact score of the territory.
-            - 'absolute mark description' (float): A descriptive message about objects inside the territory.
-            - 'relative mark' (float): The ecological rating of the territory, ranging from 0 to 5.
-            - 'relative mark description' (float): A descriptive message about the ecological impact and rating of the territory.
-            - 'clipped ecodonut' (gpd.GeoDataFrame): Clipped GeoDataFrame ith additional columns for impact percentages and source details.
-        Examples
-        --------
-        >>>  # Eco-Frame #TODO
-        >>>
-        """
-        #TODO add crs check
+    def evaluate_territory(self, eco_donut: gpd.GeoDataFrame, zone: Polygon = None) -> dict[str:Any]:
         if zone is None:
             clip = eco_donut.copy()
             total_area = sum(clip.geometry.area)
@@ -261,7 +182,8 @@ class EcoDonut:
             return NEGATIVE_WITHOUT_NAME.get(loc[0])
 
         bad_guys_sources = bad_guys_sources.apply(
-            lambda x: (x["type"].split(",")[x.where_source[1]].lstrip(), x["name"].split(",")[x.where_source[1]].lstrip()),
+            lambda x: (
+                x["type"].split(",")[x.where_source[1]].lstrip(), x["name"].split(",")[x.where_source[1]].lstrip()),
             axis=1,
         )
         bad_guys_sources = bad_guys_sources.drop_duplicates()
@@ -358,3 +280,55 @@ class EcoDonut:
                     'relative mark': 1,
                     'relative mark description': desc,
                     'clipped ecodonut': clip}
+
+
+def _combine_geodataframes(row: pd.Series, crs) -> gpd.GeoDataFrame:
+    return gpd.GeoDataFrame(pd.concat(row.tolist(), ignore_index=True), geometry="geometry", crs=crs)
+
+
+def _create_buffers(loc: pd.Series, resolution, positive_func, negative_func) -> gpd.GeoDataFrame:
+    layers_count = int(loc.layers_count)
+    # Calculation of each impact buffer
+    radius_per_lvl = abs(round(loc.total_impact_radius / layers_count - 1, 2))
+
+    initial_impact = loc.initial_impact
+
+    # Calculating the impact at each level
+    each_lvl_impact = {}
+
+    if initial_impact > 0:
+        for i in range(1, layers_count):
+            each_lvl_impact[i] = positive_func(layers_count, i) * initial_impact
+    else:
+        for i in range(1, layers_count):
+            each_lvl_impact[i] = negative_func(layers_count, i) * initial_impact
+
+    loc["layer_impact"] = initial_impact
+    loc["source"] = True
+
+    # Creating source level
+    distributed_df = pd.DataFrame()
+    distributed_df = pd.concat(
+        [distributed_df, loc[["name", "type", "layer_impact", "source", "geometry"]].to_frame().T]
+    )
+
+    initial_geom = loc["geometry"]
+    to_cut = initial_geom
+    new_layer = loc.copy()
+
+    radius = 0
+
+    for i in range(1, layers_count):
+        radius = radius + radius_per_lvl
+        impact = each_lvl_impact.get(i)
+        new_layer["layer_impact"] = round(impact, 2)
+        new_layer["source"] = False
+        loc_df = gpd.GeoDataFrame(
+            new_layer[["name", "type", "layer_impact", "source", "geometry"]].to_frame().T, geometry="geometry"
+        )
+        to_cut_temp = initial_geom.buffer(radius, resolution=resolution)
+        loc_df["geometry"] = to_cut_temp.difference(to_cut)
+        to_cut = to_cut_temp
+        distributed_df = pd.concat([distributed_df, loc_df])
+
+    return gpd.GeoDataFrame(distributed_df, geometry="geometry").reset_index(drop=True)

@@ -131,7 +131,6 @@ def project_points_into_polygons(
 
 def industrial_preprocessing(gdf_dangerous_objects_points: gpd.GeoDataFrame,
                              gdf_industrial_polygons: gpd.GeoDataFrame,
-                             merge_buffer: int = 100,
                              dangerous_level_column='dangerous_level'
                              ) -> gpd.GeoDataFrame:
     def remove_nulls(x):
@@ -149,7 +148,7 @@ def industrial_preprocessing(gdf_dangerous_objects_points: gpd.GeoDataFrame,
     gdf_dangerous_objects_points['geometry'] = gdf_dangerous_objects_points.geometry
     gdf_industrial_polygons['geometry'] = gdf_industrial_polygons.geometry
 
-    estimated_crs = gdf_dangerous_objects_points.estimate_utm_crs()
+    estimated_crs = gdf_industrial_polygons.estimate_utm_crs()
 
     gdf_dangerous_objects_points.to_crs(estimated_crs, inplace=True)
 
@@ -163,26 +162,16 @@ def industrial_preprocessing(gdf_dangerous_objects_points: gpd.GeoDataFrame,
     gdf_industrial_polygons.to_crs(estimated_crs, inplace=True)
     gdf_industrial_polygons = gdf_industrial_polygons.filter(items=['name', 'geometry'])
 
-    gdf_industrial_polygons = merge_objs_by_buffer(gdf_industrial_polygons, merge_buffer)
-
-    gdf_industrial_polygons['name'] = gdf_industrial_polygons['name'].apply(remove_nulls)
-
     union = project_points_into_polygons(gdf_dangerous_objects_points, gdf_industrial_polygons)
 
-    union[['name', dangerous_level_column]] = union.apply(lambda row: pd.Series(
-        max(list(zip(row['name_right'], row['dangerous_level'])), key=lambda x: (-x[1], len(str(x[0]))))), axis=1)
-
-    union['name'] = union.apply(lambda row: row['name'] if pd.notna(row['name']) else (
-        row.name_left[0] if len(row.name_left) == 1 else row.name_left), axis=1)
+    union[dangerous_level_column] = union.apply(lambda row: max(row['dangerous_level']), axis=1)
+    union['name'] = union['name_left'] + union['name_right']
+    union['name'] = union['name'].apply(remove_nulls)
+    union['name'] = union['name'].apply(lambda x: ', '.join(set(x)) if isinstance(x, list) else x)
     union.dropna(subset='name', inplace=True)
     union.drop(columns=['name_left', 'name_right', 'index_right'], inplace=True)
     union['type'] = 'industrial'
     union['dangerous_level'] = union['dangerous_level'].fillna(4)
-    union['initial_impact'] = union.apply(lambda x: -10 if x.dangerous_level == 1 else (
-        -8 if x.dangerous_level == 2 else (-6 if x.dangerous_level == 3 else -4)), axis=1)
-    union['fading'] = union.apply(lambda x: 0.8 if x.dangerous_level == 1 else (
-        0.6 if x.dangerous_level == 2 else (0.4 if x.dangerous_level == 3 else 0.2)), axis=1)
-    union['total_impact_radius'] = 1000 * union['initial_impact'] * union['fading']
     union = gpd.GeoDataFrame(union, crs=estimated_crs)
     union = union.loc[~union['geometry'].is_empty]
     union = union[~union['geometry'].duplicated()]
