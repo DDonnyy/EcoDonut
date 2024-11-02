@@ -8,14 +8,13 @@ readme = "README.md"
 packages = [{ include = "ecodonut", from = "src" }]
 
 [tool.poetry.dependencies]
-python = "^3.9"
+python = ">=3.10,<3.13"
 geopandas = "^0.14.3"
 numpy = "^1.23.5"
 pandas = "^2.2.0"
 matplotlib = "^3.8.4"
 mapclassify = "^2.6.1"
 tqdm = "^4.66.2"
-folium = "^0.16.0"
 dask = "^2024.10.0"
 networkx = "^3.3"
 

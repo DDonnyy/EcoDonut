@@ -4,17 +4,16 @@ from typing import Any, Tuple
 import geopandas as gpd
 import numpy as np
 import pandas as pd
-from geopandas import GeoSeries
 from numpy import ndarray
-from shapely import LineString, MultiLineString, MultiPolygon
+
 from shapely.geometry import Polygon
 from shapely.geometry.base import BaseGeometry
 from shapely.ops import polygonize
-from shapely.wkt import dumps, loads
-from dataclasses import dataclass, field
+
+from dataclasses import dataclass
 from typing import Callable, Dict
 
-from ecodonut.preprocessing import min_max_normalization
+from ecodonut.preprocessing import min_max_normalization, calc_layer_count
 from ecodonut.utils import polygons_to_linestring
 
 NEGATIVE_WITHOUT_NAME = {
@@ -27,28 +26,42 @@ NEGATIVE_WITH_NAMES = {"'industrial'": "Промышленный объект", 
 
 @dataclass
 class LayerOptions:
-    initial_impact: int
-    fading: float
-    geom_func: Callable[[BaseGeometry], BaseGeometry] = field(default=lambda x: x)
-    area_normalization: Callable[[ndarray], ndarray] = field(default=lambda _: 1.0)
-    do_buffer: bool = True
+    initial_impact: Tuple[str, Callable[[Any], int]] | int
+    fading: Tuple[str, Callable[[Any], float]] | float
+    geom_func: Callable[[BaseGeometry], BaseGeometry] | None = None
+    area_normalization: Callable[[ndarray], ndarray] | None = None
+    make_donuts: bool = True
     geometry_union: bool = False
+    simplify: int = 20
+    merge_radius: int | None = None
+
+
+def _industrial_danglvl_to_init(dang_lvl: int):
+    init_values = {1: -10, 2: -8, 3: -6, 4: -4}
+    return init_values.get(dang_lvl, -2)
+
+
+def _industrial_danglvl_to_fading(dang_lvl: int):
+    fading_values = {1: 0.8, 2: 0.6, 3: 0.4, 4: 0.2}
+    return fading_values.get(dang_lvl, 0.1)
 
 
 default_layers_options: Dict[str, LayerOptions] = {
-    "industrial": LayerOptions(initial_impact=-4, fading=0.2),
+    "industrial": LayerOptions(initial_impact=('dangerous_level', _industrial_danglvl_to_init),
+                               fading=('dangerous_level', _industrial_danglvl_to_fading)),
     "gas_station": LayerOptions(initial_impact=-4, fading=0.15, geom_func=lambda x: x.buffer(50)),
     "landfill": LayerOptions(initial_impact=-3, fading=0.4,
-                             area_normalization=lambda x: min_max_normalization(np.sqrt(x), 1, 10)),
+                             area_normalization=lambda x: min_max_normalization(np.sqrt(x), 1, 5, math.sqrt(1000),
+                                                                                math.sqrt(500000))),
     "regional_roads": LayerOptions(initial_impact=-2, fading=0.1, geom_func=lambda x: x.buffer(20),
                                    geometry_union=True),
     "federal_roads": LayerOptions(initial_impact=-4, fading=0.2, geom_func=lambda x: x.buffer(30), geometry_union=True),
     "railway": LayerOptions(initial_impact=-3, fading=0.15, geom_func=lambda x: x.buffer(30), geometry_union=True),
     "rivers": LayerOptions(initial_impact=3, fading=0.1, geom_func=lambda x: x.buffer(50)),
-    "nature_reserve": LayerOptions(initial_impact=-4, fading=0.2),
-    "water": LayerOptions(initial_impact=-4, fading=0.15,
-                          area_normalization=lambda x: min_max_normalization(np.sqrt(x), 1, 5)),
-    "woods": LayerOptions(initial_impact=3, fading=0.15, do_buffer=False),
+    "nature_reserve": LayerOptions(initial_impact=4, fading=0.2),
+    "water": LayerOptions(initial_impact=3, fading=0.1,
+                          area_normalization=lambda x: min_max_normalization(np.sqrt(x), .5, 2), simplify=50),
+    "woods": LayerOptions(initial_impact=3, fading=0.15, make_donuts=False, simplify=50),
 }
 
 
@@ -80,37 +93,78 @@ def _calculate_impact(impact_list: tuple) -> float:
 
 class EcoFrame:
     def __init__(self,
+                 min_layer_count: int = 2,
+                 max_layer_count: int = 10,
                  layer_options: Dict[str, LayerOptions] = None,
                  positive_fading_func: Callable[[int, int], float] = _positive_fading,
                  negative_fading_func: Callable[[int, int], float] = _negative_fading,
                  impact_calculator: Callable[[Tuple[float, ...]], float] = _calculate_impact):
         if layer_options is None:
             layer_options = default_layers_options
+        self.max_layer_count = max_layer_count
+        self.min_layer_count = min_layer_count
         self.layer_options = layer_options
         self.positive_fading_func = positive_fading_func
         self.negative_fading_func = negative_fading_func
         self.impact_calculator = impact_calculator
 
     def evaluate_ecoframe(self, eco_layers: Dict[str, gpd.GeoDataFrame]):
-        for layer_name, eco_layer in eco_layers.items():
+        local_crs = 32642
+        layers_to_donut = []
+        backgrounds = []
+        for layer_name, cur_eco_layer in eco_layers.items():
             if layer_name not in self.layer_options:
                 raise RuntimeError(f"{layer_name} is not provided in layer options")
+            cur_eco_layer = cur_eco_layer.copy()
 
-            if layer_name == 'industrial':
-                start_initial = self.layer_options['industrial'].initial_impact
-                eco_layer['initial_impact'] = eco_layer.apply(
-                    lambda x: start_initial * 2.5 if x.dangerous_level == 1 else (
-                        start_initial * 2 if x.dangerous_level == 2 else (
-                            start_initial * 1.5 if x.dangerous_level == 3 else start_initial)), axis=1)
+            layer_options = self.layer_options[layer_name]
+            cur_eco_layer.to_crs(local_crs, inplace=True)
 
-                start_fading = self.layer_options['fading'].fading
-                eco_layer['fading'] = eco_layer.apply(
-                    lambda x: start_fading * 4 if x.dangerous_level == 1 else (
-                        start_fading * 3 if x.dangerous_level == 2 else (
-                            start_fading * 2 if x.dangerous_level == 3 else start_fading)), axis=1)
+            geom_func = layer_options.geom_func
+            if geom_func is not None:
+                cur_eco_layer.geometry = cur_eco_layer.geometry.apply(geom_func)
+
+            geometry_union = layer_options.geometry_union
+            if geometry_union:
+                cur_eco_layer = cur_eco_layer.geometry.unary_union
+                cur_eco_layer = gpd.GeoDataFrame(geometry=[cur_eco_layer], crs=local_crs)
+
+            initial_impact = layer_options.initial_impact
+            cur_eco_layer['initial_impact'] = initial_impact if isinstance(initial_impact, int) else (
+                cur_eco_layer[initial_impact[0]].apply(initial_impact[1]))
+
+            fading = layer_options.fading
+            cur_eco_layer['fading'] = fading if isinstance(fading, float) else (
+                cur_eco_layer[fading[0]].apply(fading[1]))
+
+            area_normalization = layer_options.area_normalization
+
+            cur_eco_layer['area_normalization'] = 1 if area_normalization is None else (
+                area_normalization(cur_eco_layer.area))
+
+            cur_eco_layer['type'] = layer_name
+            cur_eco_layer['total_impact_radius'] = np.round(
+                cur_eco_layer['initial_impact'] * cur_eco_layer['fading'] * cur_eco_layer['area_normalization'] * 1000,
+                1)
+
+            cur_eco_layer['geometry'] = cur_eco_layer.geometry
+
+            cur_eco_layer.geometry = cur_eco_layer.geometry.simplify(layer_options.simplify)
+            if layer_options.make_donuts:
+                layers_to_donut.append(cur_eco_layer)
             else:
-                eco_layer['initial_impact'] = self.layer_options[layer_name].initial_impact
-                eco_layer['fading'] = self.layer_options[layer_name].fading
+                backgrounds.append(cur_eco_layer)
+
+        donuted_layers = gpd.GeoDataFrame(pd.concat(layers_to_donut, ignore_index=True), geometry='geometry',
+                                          crs=local_crs)
+
+        donuted_layers = donuted_layers.filter(
+            items=['name', 'type', 'initial_impact', 'total_impact_radius', 'geometry'])
+        donuted_layers['layers_count'] = calc_layer_count(donuted_layers, self.min_layer_count, self.max_layer_count)
+        donuted_layers = self.distribute_levels(donuted_layers)
+        donuted_layers = pd.concat([donuted_layers] + backgrounds, ignore_index=True)
+        donuted_layers = self.combine_geometry(donuted_layers)
+        return donuted_layers
 
     def combine_geometry(self, distributed: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
 
@@ -126,9 +180,6 @@ class EcoFrame:
         joined["geometry"] = enclosures
 
         joined = gpd.GeoDataFrame(joined, crs=distributed.crs)
-
-        joined["geometry"] = joined["geometry"].apply(lambda x: loads(dumps(x, rounding_precision=4)))
-
         return joined
 
     def distribute_levels(self, data: gpd.GeoDataFrame, resolution=4) -> gpd.GeoDataFrame:
@@ -139,7 +190,7 @@ class EcoFrame:
             negative_func=self.negative_fading_func,
             axis=1
         )
-        return _combine_geodataframes(distributed, crs)
+        return gpd.GeoDataFrame(pd.concat(distributed.tolist(), ignore_index=True), geometry="geometry", crs=crs)
 
     def evaluate_territory(self, eco_donut: gpd.GeoDataFrame, zone: Polygon = None) -> dict[str:Any]:
         if zone is None:
@@ -282,15 +333,10 @@ class EcoFrame:
                     'clipped ecodonut': clip}
 
 
-def _combine_geodataframes(row: pd.Series, crs) -> gpd.GeoDataFrame:
-    return gpd.GeoDataFrame(pd.concat(row.tolist(), ignore_index=True), geometry="geometry", crs=crs)
-
-
 def _create_buffers(loc: pd.Series, resolution, positive_func, negative_func) -> gpd.GeoDataFrame:
-    layers_count = int(loc.layers_count)
+    layers_count = loc.layers_count
     # Calculation of each impact buffer
-    radius_per_lvl = abs(round(loc.total_impact_radius / layers_count - 1, 2))
-
+    radius_per_lvl = abs(round(loc.total_impact_radius / (layers_count - 1), 2))
     initial_impact = loc.initial_impact
 
     # Calculating the impact at each level

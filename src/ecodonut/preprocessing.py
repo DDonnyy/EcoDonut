@@ -5,34 +5,12 @@ from numpy import ndarray
 from shapely import Polygon
 
 
-def min_max_normalization(data, new_min=0, new_max=1):
-    """
-    Min-max normalization for a given array of data.
-
-    Parameters
-    ----------
-    data: numpy.ndarray
-        Input data to be normalized.
-    new_min: float, optional
-        New minimum value for normalization. Defaults to 0.
-    new_max: float, optional
-        New maximum value for normalization. Defaults to 1.
-
-    Returns
-    -------
-    numpy.ndarray
-        Normalized data.
-
-    Examples
-    --------
-    >>> import numpy as np
-    >>> data = np.array([1, 2, 3, 4, 5])
-    >>> normalized_data = min_max_normalization(data, new_min=0, new_max=1)
-    """
-
-    min_value = np.min(data)
-    max_value = np.max(data)
-    normalized_data = (data - min_value) / (max_value - min_value) * (new_max - new_min) + new_min
+def min_max_normalization(data, new_min=0, new_max=1, old_min=None, old_max=None):
+    if old_min is None:
+        old_min = np.min(data)
+    if old_max is None:
+        old_max = np.max(data)
+    normalized_data = (data - old_min) / (old_max - old_min) * (new_max - new_min) + new_min
     return normalized_data
 
 
@@ -110,7 +88,7 @@ def calc_layer_count(gdf: gpd.GeoDataFrame, minv=2, maxv=10) -> ndarray:
     """
     impacts = np.abs(gdf["total_impact_radius"])
     norm_impacts = min_max_normalization(impacts, minv, maxv)
-    return np.round(norm_impacts)
+    return np.round(norm_impacts).astype(int)
 
 
 def project_points_into_polygons(

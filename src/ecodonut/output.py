@@ -31,7 +31,7 @@ def value_to_color(value, cmap="RdYlGn", vmin=-10, vmax=10) -> str:
     return matplotlib.colors.to_hex(color)
 
 
-def get_map(gdf: gpd.GeoDataFrame, value_min=-10, value_max=10, colormap="RdYlGn", tiles="OpenStreetMap"):
+def get_map(gdf: gpd.GeoDataFrame, value_min=-8, value_max=8, colormap="RdYlGn", tiles="OpenStreetMap"):
     """
     Function to generate a map visualization based on the impact of different layers.
 
@@ -58,7 +58,7 @@ def get_map(gdf: gpd.GeoDataFrame, value_min=-10, value_max=10, colormap="RdYlGn
     >>> gdf = gpd.read_file('path_to_your_file.geojson')
     >>> map = get_map(gdf, value_min=-10, value_max=10, colormap="RdYlGn", tiles="OpenStreetMap")
     """
-    m = gdf.sort_values(by="layer_impact").explore(
+    m = gdf.explore(
         column="layer_impact",
         categorical=False,
         cmap=colormap,
