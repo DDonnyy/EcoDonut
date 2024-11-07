@@ -2,6 +2,8 @@ import geopandas as gpd
 import matplotlib
 from matplotlib import pyplot as plt
 
+from .ecodonut import EcoFrame
+
 
 def value_to_color(value, cmap="RdYlGn", vmin=-10, vmax=10) -> str:
     """
@@ -31,14 +33,14 @@ def value_to_color(value, cmap="RdYlGn", vmin=-10, vmax=10) -> str:
     return matplotlib.colors.to_hex(color)
 
 
-def get_map(gdf: gpd.GeoDataFrame, value_min=-8, value_max=8, colormap="RdYlGn", tiles="OpenStreetMap"):
+def get_map(ecoframe: EcoFrame, value_min=-8, value_max=8, colormap="RdYlGn", tiles="OpenStreetMap"):
     """
     Function to generate a map visualization based on the impact of different layers.
 
     Parameters
     ----------
-    gpd: gpd.GeoDataFrame
-        A GeoPandas GeoDataFrame that contains the geometries and their corresponding layer impacts.
+    ecoframe: EcoFrame
+        An EcoGeoDataFrame that contains the geometries and their corresponding layer impacts.
     value_min: int, optional
         The minimum value for the color scale. Defaults to -10.
     value_max: int, optional
@@ -58,7 +60,8 @@ def get_map(gdf: gpd.GeoDataFrame, value_min=-8, value_max=8, colormap="RdYlGn",
     >>> gdf = gpd.read_file('path_to_your_file.geojson')
     >>> map = get_map(gdf, value_min=-10, value_max=10, colormap="RdYlGn", tiles="OpenStreetMap")
     """
-    m = gdf.explore(
+
+    m = gpd.GeoDataFrame(ecoframe,geometry='geometry',crs=ecoframe.crs).explore(
         column="layer_impact",
         categorical=False,
         cmap=colormap,
