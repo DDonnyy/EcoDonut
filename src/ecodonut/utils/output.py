@@ -2,7 +2,7 @@ import geopandas as gpd
 import matplotlib
 from matplotlib import pyplot as plt
 
-from .ecodonut import EcoFrame
+from ecodonut.eco_frame import EcoFrame
 
 
 def value_to_color(value, cmap="RdYlGn", vmin=-10, vmax=10) -> str:
@@ -61,7 +61,7 @@ def get_map(ecoframe: EcoFrame, value_min=-8, value_max=8, colormap="RdYlGn", ti
     >>> map = get_map(gdf, value_min=-10, value_max=10, colormap="RdYlGn", tiles="OpenStreetMap")
     """
 
-    m = gpd.GeoDataFrame(ecoframe,geometry='geometry',crs=ecoframe.crs).explore(
+    m = gpd.GeoDataFrame(ecoframe, geometry="geometry", crs=ecoframe.local_crs).explore(
         column="layer_impact",
         categorical=False,
         cmap=colormap,

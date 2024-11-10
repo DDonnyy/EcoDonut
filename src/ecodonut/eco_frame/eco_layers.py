@@ -1,7 +1,6 @@
 import math
 from dataclasses import dataclass
-from typing import Any, Tuple
-from typing import Callable, Dict
+from typing import Any, Callable, Dict, Tuple
 
 import numpy as np
 from numpy import ndarray
@@ -79,12 +78,6 @@ default_layers_options: Dict[str, LayerOptions] = {
         geom_func=lambda x: x.buffer(30),
         geom_union_unionbuff=(True, 0),
     ),
-    "rivers": LayerOptions(
-        initial_impact=3,
-        fading=0.1,
-        russian_name="Речной объект",
-        geom_func=lambda x: x.buffer(50),
-    ),
     "nature_reserve": LayerOptions(
         initial_impact=4,
         fading=0.2,
@@ -94,7 +87,7 @@ default_layers_options: Dict[str, LayerOptions] = {
         initial_impact=3,
         fading=0.1,
         russian_name="Водный объект",
-        area_normalization=lambda x: min_max_normalization(np.sqrt(x), 1, 10, math.sqrt(1000), math.sqrt(3.19e10)),
+        geom_union_unionbuff=(True, 50),
     ),
     "woods": LayerOptions(
         initial_impact=3,
