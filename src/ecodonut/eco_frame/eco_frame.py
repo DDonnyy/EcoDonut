@@ -12,11 +12,13 @@ from ecodonut.utils import calc_layer_count, combine_geometry, create_buffers, m
 
 
 def _positive_fading(layers_count: int, i: int) -> float:
+    """Calculate fading effect for positive layers."""
     sigmoid_value = math.exp(-(i - 0.5) * ((0.7 * math.e**2) / layers_count))
     return sigmoid_value
 
 
 def _negative_fading(layers_count: int, i: int) -> float:
+    """Calculate fading effect for negative layers."""
     sigmoid_value = 1 / (1 + math.exp(10 / layers_count * (i - 0.5 - (layers_count / 2))))
     return sigmoid_value
 
@@ -38,6 +40,10 @@ def _calculate_impact(impact_list: list) -> float:
 
 
 class EcoFrame(gpd.GeoDataFrame):
+    """
+    A GeoDataFrame-based class that represents an ecological frame (eco-frame),
+    storing geometry and associated ecological data with customizable settings.
+    """
     _metadata = ["min_donut_count_radius", "max_donut_count_radius", "negative_types", "positive_types", "local_crs"]
 
     def __init__(self, min_donut_count_radius, max_donut_count_radius, negative_types, positive_types, *args, **kwargs):
@@ -60,6 +66,19 @@ class EcoFrame(gpd.GeoDataFrame):
 
 
 class EcoFrameCalculator:
+    """
+    A class for calculating eco-frame based on geographic layers and customizable parameters.
+
+    Attributes:
+        max_donut_count_radius (float): Maximum radius for donut count calculation.
+        min_donut_count_radius (float): Minimum radius for donut count calculation.
+        local_crs (CRS): Local coordinate reference system for the territory.
+        territory (GeoDataFrame): GeoDataFrame of the target territory.
+        layer_options (Dict[str, LayerOptions]): Layer options for eco-frame evaluation.
+        positive_fading_func (Callable): Function to calculate positive fading effect.
+        negative_fading_func (Callable): Function to calculate negative fading effect.
+        impact_calculator (Callable): Function to calculate the impact score.
+    """
     max_donut_count_radius = None
     min_donut_count_radius = None
 
@@ -72,6 +91,17 @@ class EcoFrameCalculator:
         negative_fading_func: Callable[[int, int], float] = _negative_fading,
         impact_calculator: Callable[[Tuple[float, ...]], float] = _calculate_impact,
     ):
+        """
+        Initializes the EcoFrameCalculator with specified settings.
+
+        Args:
+            territory (GeoDataFrame): Target territory for eco-frame calculations.
+            settings_from (EcoFrame, optional): Existing EcoFrame for inheriting settings.
+            layer_options (Dict[str, LayerOptions], optional): Layer options for the eco-frame.
+            positive_fading_func (Callable, optional): Function to compute positive fading.
+            negative_fading_func (Callable, optional): Function to compute negative fading.
+            impact_calculator (Callable, optional): Function to compute overall impact score.
+        """
         if layer_options is None:
             layer_options = default_layers_options
         self.local_crs = territory.estimate_utm_crs()
@@ -90,6 +120,17 @@ class EcoFrameCalculator:
         min_layer_count: int = 2,
         max_layer_count: int = 10,
     ) -> EcoFrame:
+        """
+        Creates an EcoFrame from specified ecological layers.
+
+        Args:
+            eco_layers (Dict[str, GeoDataFrame]): Dictionary of ecological layers by name.
+            min_layer_count (int, optional): Minimum count of layers to include in donut calculation.
+            max_layer_count (int, optional): Maximum count of layers to include in donut calculation.
+
+        Returns:
+            EcoFrame: Generated EcoFrame instance containing ecological impact data.
+        """
         layers_to_donut = []
         backgrounds = []
         positive_layers = {}
@@ -277,6 +318,16 @@ class TerritoryMark:
 
 
 def mark_territory(eco_frame: EcoFrame, zone: gpd.GeoDataFrame = None) -> dict[str:Any]:
+    """
+    Generates a territory mark by assessing ecological impact within a specified zone.
+
+    Args:
+        eco_frame (EcoFrame): The eco-frame containing ecological layers.
+        zone (GeoDataFrame, optional): Specific area to calculate ecological impact for.
+
+    Returns:
+        TerritoryMark: Calculated territory mark object containing impact assessment.
+    """
     zone = zone.copy()
     eco_frame.set_geometry("geometry", inplace=True)
     eco_frame.to_crs(eco_frame.local_crs, inplace=True)
@@ -398,6 +449,17 @@ def mark_territory(eco_frame: EcoFrame, zone: gpd.GeoDataFrame = None) -> dict[s
 
 
 def concat_ecoframes(eco_frame1: EcoFrame, eco_frame2: EcoFrame, impact_calculator=_calculate_impact) -> EcoFrame:
+    """
+    Merges two eco-frames into a single EcoFrame with combined geometries and impacts.
+
+    Args:
+        eco_frame1 (EcoFrame): First eco-frame to merge.
+        eco_frame2 (EcoFrame): Second eco-frame to merge.
+        impact_calculator (Callable): Function to calculate impact during merging.
+
+    Returns:
+        EcoFrame: Merged EcoFrame containing combined ecological data and geometries.
+    """
     frame1 = eco_frame1.copy()
     frame2 = eco_frame2.copy()
 

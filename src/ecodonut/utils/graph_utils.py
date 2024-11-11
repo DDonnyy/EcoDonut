@@ -6,6 +6,7 @@ import geopandas as gpd
 import networkx as nx
 import numpy as np
 from scipy.spatial import KDTree
+from shapely import Geometry
 
 
 def rivers_dijkstra(G, source: int, weight: str, cutoff: float):
@@ -86,7 +87,7 @@ def _dijkstra_avg_weight(G, source: int, weight: str, cutoff: float):
 
 
 def get_closest_nodes(gdf_from: gpd.GeoDataFrame, to_nx_graph: nx.Graph) -> list[tuple[Any, Any]]:
-    if gdf_from.crs != to_nx_graph.graph["crs"]:
+    if gdf_from.crs.to_epsg() != to_nx_graph.graph["crs"]:
         gdf_from.to_crs(to_nx_graph.graph["crs"], inplace=True)
 
     mapping = dict((u, id) for (id, u) in zip(to_nx_graph.nodes(), range(to_nx_graph.number_of_nodes())))
@@ -119,6 +120,6 @@ def graph_to_gdf(
     e_ind_source, e_ind_target, e_data = zip(*graph.edges(data=True))
     index_matrix = np.array([e_ind_source, e_ind_target]).transpose()
     final_index = [tuple(i) for i in index_matrix]
-    lines = (LineString(d["geometry"]) if not isinstance(d, float) else None for d in e_data)
-    gdf_edges = gpd.GeoDataFrame(e_data, index=final_index, crs=32636, geometry=list(lines))
+    lines = ((d["geometry"]) if isinstance(d["geometry"], Geometry) else None for d in e_data)
+    gdf_edges = gpd.GeoDataFrame(e_data, index=final_index, crs=crs, geometry=list(lines))
     return gdf_edges

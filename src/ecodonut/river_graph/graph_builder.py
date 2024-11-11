@@ -6,17 +6,19 @@ import geopandas as gpd
 import networkx as nx
 import numpy as np
 import pandas as pd
+from dask.diagnostics import ProgressBar
 from loguru import logger
 from shapely import LineString, MultiLineString, Point, convex_hull, unary_union
+from tqdm.auto import tqdm
 
 
 def construct_water_graph(
-    rivers: gpd.GeoDataFrame,
-    water: gpd.GeoDataFrame,
-    segmentize_len=300,
-    max_river_width=50000,
-    basic_river_width=5,
-    basic_river_speed=50,
+        rivers: gpd.GeoDataFrame,
+        water: gpd.GeoDataFrame,
+        segmentize_len=300,
+        max_river_width=50000,
+        basic_river_width=5,
+        basic_river_speed=50,
 ) -> nx.DiGraph:
     local_crs = rivers.estimate_utm_crs()
     rivers.to_crs(local_crs, inplace=True)
@@ -28,7 +30,6 @@ def construct_water_graph(
     water["geometry"] = water.geometry
     rivers.set_geometry("geometry", inplace=True)
     water.set_geometry("geometry", inplace=True)
-
     node_id = 0
     nodes = []
     edges = []
@@ -91,7 +92,8 @@ def construct_water_graph(
     dask_edgenodes["geometries"] = dask_edgenodes.apply(
         lambda x: _calc_edge_width(x, max_dist=max_river_width, basic_dist=basic_river_width), axis=1, meta=tuple
     )
-    edgenodes = dask_edgenodes.compute()
+    with ProgressBar():
+        edgenodes = dask_edgenodes.compute()
 
     edgenodes[["geometry_v", "geometry_u"]] = pd.DataFrame(edgenodes["geometries"].tolist(), index=edgenodes.index)
     grouped_nodes = grouped_nodes.merge(
@@ -119,9 +121,9 @@ def construct_water_graph(
     edges.replace(np.inf, basic_river_width, inplace=True)
     grouped_nodes[["x", "y"]] = pd.DataFrame(grouped_nodes["point"].tolist(), index=grouped_nodes.index)
     grouped_nodes.reset_index(drop=True, inplace=True)
-    logger.debug("Building river graph...")
+
     graph = nx.DiGraph()
-    for i, edge in edges.iterrows():
+    for i, edge in tqdm(edges.iterrows(), total=len(edges), desc="Processing edges"):
         u = int(edge["u"])
         v = int(edge["v"])
         width = (edge["width_u"] + edge["width_v"]) / 2
@@ -146,7 +148,7 @@ def construct_water_graph(
 
     graph.add_nodes_from(set(grouped_nodes.index) - set(graph.nodes))
     for col in grouped_nodes[["x", "y"]].columns:
-        nx.set_node_attributes(graph, name=col, values=grouped_nodes[col].dropna())
+        nx.set_node_attributes(graph, name=col, values=grouped_nodes[col].dropna().astype(np.float32))
     graph.graph['crs'] = local_crs.to_epsg()
     return graph
 
@@ -202,5 +204,3 @@ def _calc_edge_width(loc, max_dist, basic_dist):
     if cutted_perp_vu is None:
         cutted_perp_vu = perpendicular_to_line_end((loc.vx, loc.vy), (loc.ux, loc.uy), basic_dist)
     return cutted_perp_uv, cutted_perp_vu
-
-

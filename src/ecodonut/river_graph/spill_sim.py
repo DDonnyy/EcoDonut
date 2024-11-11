@@ -13,19 +13,20 @@ def simulate_spill(
         raise RuntimeError(f"{pollution_column} is not in geodataframe,specify your pollution_column attribute")
 
     local_crs = river_graph.graph["crs"]
-    pollution_sources = pollution_sources.copy()
+
     pollution_sources.to_crs(local_crs, inplace=True)
     pollution_sources[["closest_node", "dist"]] = get_closest_nodes(pollution_sources, river_graph)
     pollution_sources = pollution_sources[pollution_sources["dist"] <= min_dist_to_river]
     result = pd.DataFrame()
     for i, row in pollution_sources.iterrows():
-        pollution = row.pollution_column
+        pollution = row[pollution_column]
         weight_remain = rivers_dijkstra(river_graph, int(row.closest_node), weight="weight", cutoff=pollution)
         weight_remain = pd.DataFrame.from_dict(weight_remain, orient="index", columns=["remain"])
         result = pd.concat([result, weight_remain], axis=1)
     result = result.sum(axis=1)
-    subgraph = river_graph.subgraph(result.index)
-    subgraph.graph["crs"] = local_crs.to_epsg()
+    subgraph = river_graph.subgraph(result.index).copy()
+    subgraph.graph["crs"] = local_crs
+
     for u, v, data in subgraph.edges(data=True):
         data["remain"] = (result.loc[u] + result.loc[v]) / 2
 
