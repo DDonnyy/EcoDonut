@@ -2,13 +2,34 @@ import geopandas as gpd
 import networkx as nx
 import pandas as pd
 from shapely.ops import polygonize
-from ecodonut.utils import get_closest_nodes, rivers_dijkstra, graph_to_gdf, polygons_to_linestring
+
+from ecodonut.utils import get_closest_nodes, graph_to_gdf, polygons_to_linestring, rivers_dijkstra
 
 
 def simulate_spill(
     pollution_sources: gpd.GeoDataFrame, river_graph: nx.DiGraph, min_dist_to_river=100, pollution_column="pollution"
 ) -> gpd.GeoDataFrame:
+    """
+    Simulate the spread of pollution in a river network, based on proximity to pollution sources and pollutant levels.
 
+    This function identifies pollution sources that are within a specified minimum distance from a river network,
+    calculates how much pollution remains along each edge in the river network, and aggregates the results into
+    polygons representing affected areas with pollution values.
+
+    Args:
+        pollution_sources (gpd.GeoDataFrame): A GeoDataFrame containing the locations and pollution values of sources.
+        river_graph (nx.DiGraph): A directed graph representing the river network, with nodes and edges. The graph must
+            contain a 'crs' attribute indicating the coordinate reference system.
+        min_dist_to_river (float, optional): The maximum distance between pollution sources and river nodes for
+            pollution to be considered in the simulation. Default is 100.
+        pollution_column (str, optional): The name of the column in `pollution_sources` that specifies pollution values.
+            Default is "pollution".
+
+    Returns:
+        gpd.GeoDataFrame: A GeoDataFrame containing polygons representing areas affected by pollution. Each polygon
+        has an attribute `remain`, which indicates the pollution concentration within that area.
+
+    """
     if pollution_column not in pollution_sources.columns:
         raise RuntimeError(f"{pollution_column} is not in geodataframe,specify your pollution_column attribute")
 
@@ -18,7 +39,7 @@ def simulate_spill(
     pollution_sources[["closest_node", "dist"]] = get_closest_nodes(pollution_sources, river_graph)
     pollution_sources = pollution_sources[pollution_sources["dist"] <= min_dist_to_river]
     result = pd.DataFrame()
-    for i, row in pollution_sources.iterrows():
+    for _, row in pollution_sources.iterrows():
         pollution = row[pollution_column]
         weight_remain = rivers_dijkstra(river_graph, int(row.closest_node), weight="weight", cutoff=pollution)
         weight_remain = pd.DataFrame.from_dict(weight_remain, orient="index", columns=["remain"])

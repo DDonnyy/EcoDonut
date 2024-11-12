@@ -1,8 +1,7 @@
 import geopandas as gpd
 import numpy as np
 import pandas as pd
-from shapely import LineString, MultiLineString
-from shapely import MultiPolygon, Polygon
+from shapely import LineString, MultiLineString, MultiPolygon, Polygon
 from shapely.ops import polygonize
 
 
@@ -52,8 +51,7 @@ def polygons_to_linestring(geom: Polygon | MultiPolygon):
 
     if geom.geom_type == "Polygon":
         return MultiLineString(convert_polygon(geom))
-    else:
-        return convert_multipolygon(geom)
+    return convert_multipolygon(geom)
 
 
 def create_buffers(loc: pd.Series, resolution, positive_func, negative_func) -> gpd.GeoDataFrame:
@@ -156,6 +154,3 @@ def project_points_into_polygons(
     intersect = intersect.groupby("index").agg(list)
     intersect["geometry"] = polygons.loc[intersect.index.values, "geometry"]
     return intersect
-
-
-

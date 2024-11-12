@@ -17,15 +17,15 @@ def value_to_color(
     eco_frame[color_column] = eco_frame["layer_impact"].apply(
         lambda x: cmapYlGn(norm_pos(x)) if x >= 0 else cmapYlOrRd(norm_neg(x))
     )
-    eco_frame[color_column] = eco_frame[color_column].apply(lambda x: matplotlib.colors.to_hex(x))
+    eco_frame[color_column] = eco_frame[color_column].apply(matplotlib.colors.to_hex)
     return eco_frame
 
 
 def get_map(ecoframe: EcoFrame, tiles="CartoDB positron"):
 
-    ecoframe = value_to_color(ecoframe,'color')
+    ecoframe = value_to_color(ecoframe, "color")
     m = gpd.GeoDataFrame(ecoframe, geometry="geometry", crs=ecoframe.local_crs).explore(
-        color=ecoframe['color'],
+        color=ecoframe["color"],
         tiles=tiles,
     )
     return m

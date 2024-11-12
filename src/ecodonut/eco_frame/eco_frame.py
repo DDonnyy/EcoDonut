@@ -44,6 +44,7 @@ class EcoFrame(gpd.GeoDataFrame):
     A GeoDataFrame-based class that represents an ecological frame (eco-frame),
     storing geometry and associated ecological data with customizable settings.
     """
+
     _metadata = ["min_donut_count_radius", "max_donut_count_radius", "negative_types", "positive_types", "local_crs"]
 
     def __init__(self, min_donut_count_radius, max_donut_count_radius, negative_types, positive_types, *args, **kwargs):
@@ -79,6 +80,7 @@ class EcoFrameCalculator:
         negative_fading_func (Callable): Function to calculate negative fading effect.
         impact_calculator (Callable): Function to calculate the impact score.
     """
+
     max_donut_count_radius = None
     min_donut_count_radius = None
 
@@ -317,7 +319,7 @@ class TerritoryMark:
         return self.__str__()
 
 
-def mark_territory(eco_frame: EcoFrame, zone: gpd.GeoDataFrame = None) -> dict[str:Any]:
+def mark_territory(eco_frame: EcoFrame, zone: gpd.GeoDataFrame = None) -> TerritoryMark:
     """
     Generates a territory mark by assessing ecological impact within a specified zone.
 

@@ -13,13 +13,36 @@ from tqdm.auto import tqdm
 
 
 def construct_water_graph(
-        rivers: gpd.GeoDataFrame,
-        water: gpd.GeoDataFrame,
-        segmentize_len=300,
-        max_river_width=50000,
-        basic_river_width=5,
-        basic_river_speed=50,
+    rivers: gpd.GeoDataFrame,
+    water: gpd.GeoDataFrame,
+    segmentize_len=300,
+    max_river_width=50000,
+    basic_river_width=5,
+    basic_river_speed=50,
 ) -> nx.DiGraph:
+    """
+    Constructs a directed graph representing a river network, with nodes and edges defined by river geometry and water bodies.
+
+    This function creates nodes and edges from river line geometries, assigns attributes to each edge such as width
+    and flow speed, and returns the river network as a directed graph. The function also takes into account the
+    proximity of water bodies to rivers to determine edge widths and geometries.
+
+    Args:
+        rivers (gpd.GeoDataFrame): GeoDataFrame containing the river geometries as LineString objects.
+        water (gpd.GeoDataFrame): GeoDataFrame containing the water body geometries, used to adjust river widths
+            where rivers intersect water bodies.
+        segmentize_len (int, optional): Length for segmenting the river lines, used to split long lines into smaller
+            segments. Default is 300.
+        max_river_width (int, optional): Maximum river width. Used in calculating edge width based on proximity
+            to water bodies. Default is 50000.
+        basic_river_width (int, optional): Base width for rivers when no other data is available. Default is 5.
+        basic_river_speed (int, optional): Base speed for calculating edge weight. Default is 50.
+
+    Returns:
+        nx.DiGraph: A directed graph representing the river network, with nodes and edges. Edge attributes include
+        `width`, `length`, `weight`, and `geometry`. Node attributes include `x` and `y` coordinates.
+
+    """
     local_crs = rivers.estimate_utm_crs()
     rivers.to_crs(local_crs, inplace=True)
 
@@ -123,7 +146,7 @@ def construct_water_graph(
     grouped_nodes.reset_index(drop=True, inplace=True)
 
     graph = nx.DiGraph()
-    for i, edge in tqdm(edges.iterrows(), total=len(edges), desc="Processing edges"):
+    for _, edge in tqdm(edges.iterrows(), total=len(edges), desc="Processing edges"):
         u = int(edge["u"])
         v = int(edge["v"])
         width = (edge["width_u"] + edge["width_v"]) / 2
@@ -149,7 +172,7 @@ def construct_water_graph(
     graph.add_nodes_from(set(grouped_nodes.index) - set(graph.nodes))
     for col in grouped_nodes[["x", "y"]].columns:
         nx.set_node_attributes(graph, name=col, values=grouped_nodes[col].dropna().astype(np.float32))
-    graph.graph['crs'] = local_crs.to_epsg()
+    graph.graph["crs"] = local_crs.to_epsg()
     return graph
 
 

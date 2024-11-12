@@ -9,7 +9,7 @@ from scipy.spatial import KDTree
 from shapely import Geometry
 
 
-def rivers_dijkstra(G, source: int, weight: str, cutoff: float):
+def rivers_dijkstra(graph, source: int, weight: str, cutoff: float):
     push = heappush
     pop = heappop
     weight_remain = {}
@@ -22,7 +22,7 @@ def rivers_dijkstra(G, source: int, weight: str, cutoff: float):
             weight_remain[u] = weight_remain[u] + remain_last
         else:
             weight_remain[u] = remain_last
-        items = G[u].items()
+        items = graph[u].items()
         match len(items):
             case 1:
                 for v, e in items:
@@ -38,7 +38,7 @@ def rivers_dijkstra(G, source: int, weight: str, cutoff: float):
             case _:
                 distrib_weight = {}
                 for v, e in items:
-                    distrib_weight[v] = _dijkstra_avg_weight(G, v, weight, remain_last)
+                    distrib_weight[v] = _dijkstra_avg_weight(graph, v, weight, remain_last)
                 if sum(distrib_weight.values()) == 0:
                     continue
                 scale_factor = remain_last / sum(distrib_weight.values())
@@ -54,8 +54,8 @@ def rivers_dijkstra(G, source: int, weight: str, cutoff: float):
     return weight_remain
 
 
-def _dijkstra_avg_weight(G, source: int, weight: str, cutoff: float):
-    G_pred = G._pred
+def _dijkstra_avg_weight(graph, source: int, weight: str, cutoff: float):
+    g_pred = graph._pred
     push = heappush
     pop = heappop
     dist = {}  # dictionary of final distances
@@ -69,8 +69,8 @@ def _dijkstra_avg_weight(G, source: int, weight: str, cutoff: float):
         if u in dist:
             continue  # already searched this node.
         dist[u] = d
-        items = G[u].items()
-        if len(items) > 1 or len(G_pred[u].items()) > 1:
+        items = graph[u].items()
+        if len(items) > 1 or len(g_pred[u].items()) > 1:
             continue
         for v, e in items:
             cost = e.get(weight, 0)
