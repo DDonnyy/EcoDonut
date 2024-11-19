@@ -16,6 +16,8 @@ def min_max_normalization(data, new_min=0, new_max=1, old_min=None, old_max=None
 
 def calc_layer_count(gdf, minv=2, maxv=10, overall_min=None, overall_max=None) -> np.ndarray:
     impacts = np.abs(gdf["total_impact_radius"])
+    if len(np.unique(impacts)) == 1:
+        return np.full((impacts.shape[0]), int((minv+maxv)/2))
     norm_impacts = min_max_normalization(impacts, minv, maxv, overall_min, overall_max)
     return np.round(norm_impacts).astype(int)
 
