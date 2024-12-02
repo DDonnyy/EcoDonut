@@ -41,7 +41,7 @@ default_layers_options: Dict[str, LayerOptions] = {
         initial_impact=("dangerous_level", _industrial_danglvl_to_init),
         fading=("dangerous_level", _industrial_danglvl_to_fading),
         russian_name="Промышленный объект",
-        merge_radius=100,
+        merge_radius=250,
     ),
     "gas_station": LayerOptions(
         initial_impact=-4,

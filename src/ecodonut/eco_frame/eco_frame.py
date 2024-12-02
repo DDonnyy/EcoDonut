@@ -5,6 +5,7 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 from loguru import logger
+from shapely import Polygon, MultiPolygon
 from shapely.ops import unary_union
 
 from ecodonut.eco_frame.eco_layers import LayerOptions, default_layers_options
@@ -13,7 +14,7 @@ from ecodonut.utils import calc_layer_count, combine_geometry, create_buffers, m
 
 def _positive_fading(layers_count: int, i: int) -> float:
     """Calculate fading effect for positive layers."""
-    sigmoid_value = math.exp(-(i - 0.5) * ((0.7 * math.e**2) / layers_count))
+    sigmoid_value = math.exp(-(i - 0.5) * ((0.7 * math.e ** 2) / layers_count))
     return sigmoid_value
 
 
@@ -30,11 +31,11 @@ def _calculate_impact(impact_list: list) -> float:
     negative_list = sorted([abs(x) for x in impact_list if x < 0])
     total_positive = 0
     for imp in positive_list:
-        total_positive = np.sqrt(imp**2 + total_positive**2)
+        total_positive = np.sqrt(imp ** 2 + total_positive ** 2)
 
     total_negative = 0
     for imp in negative_list:
-        total_negative = np.sqrt(imp**2 + total_negative**2)
+        total_negative = np.sqrt(imp ** 2 + total_negative ** 2)
 
     return total_positive - total_negative
 
@@ -85,13 +86,13 @@ class EcoFrameCalculator:
     min_donut_count_radius = None
 
     def __init__(
-        self,
-        territory: gpd.GeoDataFrame,
-        settings_from: EcoFrame = None,
-        layer_options: Dict[str, LayerOptions] = None,
-        positive_fading_func: Callable[[int, int], float] = _positive_fading,
-        negative_fading_func: Callable[[int, int], float] = _negative_fading,
-        impact_calculator: Callable[[Tuple[float, ...]], float] = _calculate_impact,
+            self,
+            territory: gpd.GeoDataFrame,
+            settings_from: EcoFrame = None,
+            layer_options: Dict[str, LayerOptions] = None,
+            positive_fading_func: Callable[[int, int], float] = _positive_fading,
+            negative_fading_func: Callable[[int, int], float] = _negative_fading,
+            impact_calculator: Callable[[Tuple[float, ...]], float] = _calculate_impact,
     ):
         """
         Initializes the EcoFrameCalculator with specified settings.
@@ -117,10 +118,10 @@ class EcoFrameCalculator:
         self.impact_calculator = impact_calculator
 
     def evaluate_ecoframe(
-        self,
-        eco_layers: Dict[str, gpd.GeoDataFrame],
-        min_layer_count: int = 2,
-        max_layer_count: int = 10,
+            self,
+            eco_layers: Dict[str, gpd.GeoDataFrame],
+            min_layer_count: int = 2,
+            max_layer_count: int = 10,
     ) -> EcoFrame:
         """
         Creates an EcoFrame from specified ecological layers.
@@ -152,6 +153,7 @@ class EcoFrameCalculator:
             geom_func = layer_options.geom_func
             if geom_func is not None:
                 cur_eco_layer.geometry = cur_eco_layer.geometry.apply(geom_func)
+            cur_eco_layer = cur_eco_layer[cur_eco_layer.geom_type.isin(["MultiPolygon", "Polygon"])]
 
             # merging geometry if indeed
             russian_name = layer_options.russian_name
@@ -235,6 +237,8 @@ class EcoFrameCalculator:
         donuted_layers = donuted_layers.filter(
             items=["name", "type", "initial_impact", "total_impact_radius", "geometry"]
         )
+
+        logger.debug("Calculation layer's count...")
         if self.min_donut_count_radius is None and self.max_donut_count_radius is None:
             donuted_layers["layers_count"] = calc_layer_count(donuted_layers, min_layer_count, max_layer_count)
             impacts = np.abs(donuted_layers["total_impact_radius"])
@@ -249,11 +253,13 @@ class EcoFrameCalculator:
 
         min_donut_count_radius = min_layer_count, min_layer_rad
         max_donut_count_radius = max_layer_count, max_layer_rad
-
+        logger.debug("Distributing levels...")
         donuted_layers = self._distribute_levels(donuted_layers)
         donuted_layers = pd.concat([donuted_layers] + backgrounds, ignore_index=True)
+        logger.debug("Combining geometry...")
         donuted_layers = combine_geometry(donuted_layers, self.impact_calculator)
         donuted_layers = donuted_layers.clip(self.territory, keep_geom_type=True)
+        logger.debug("Grouping geometry...")
         donuted_layers = (
             donuted_layers.groupby(["name", "layer_impact"])
             .agg({"type": "first", "source": "first", "geometry": lambda x: unary_union(x)})
@@ -291,12 +297,12 @@ class TerritoryMark:
     clipped_ecoframe: gpd.GeoDataFrame = None
 
     def __init__(
-        self,
-        absolute_mark: float,
-        absolute_mark_description: str,
-        relative_mark: float,
-        relative_mark_description: str,
-        clipped_ecoframe: gpd.GeoDataFrame,
+            self,
+            absolute_mark: float,
+            absolute_mark_description: str,
+            relative_mark: float,
+            relative_mark_description: str,
+            clipped_ecoframe: gpd.GeoDataFrame,
     ):
         self.absolute_mark = absolute_mark
         self.absolute_mark_description = absolute_mark_description
@@ -369,9 +375,9 @@ def mark_territory(eco_frame: EcoFrame, zone: gpd.GeoDataFrame = None) -> Territ
             russian_name = eco_frame.negative_types.get(source["type"])
             if isinstance(name, str):
                 if russian_name in name:
-                    obj_message += f"\n{ind+1}. {name}"
+                    obj_message += f"\n{ind + 1}. {name}"
                 else:
-                    obj_message += f'\n{ind+1}. {russian_name}: "{name}"'
+                    obj_message += f'\n{ind + 1}. {russian_name}: "{name}"'
             if isinstance(name, tuple):
                 formatted_names = "\n    ".join(f"- {item}" for item in name)
                 obj_message += f'\n{ind + 1}. Множество объектов типа "{russian_name}":\n    {formatted_names}'
