@@ -1,13 +1,19 @@
 import geopandas as gpd
 import networkx as nx
+import numpy as np
 import pandas as pd
-from shapely.ops import polygonize
+from loguru import logger
+from shapely.ops import polygonize, unary_union
 
 from ecodonut.utils import get_closest_nodes, graph_to_gdf, polygons_to_linestring, rivers_dijkstra
 
 
 def simulate_spill(
-    pollution_sources: gpd.GeoDataFrame, river_graph: nx.DiGraph, min_dist_to_river=100, pollution_column="pollution"
+    pollution_sources: gpd.GeoDataFrame,
+    river_graph: nx.DiGraph,
+    min_dist_to_river=100,
+    pollution_column="pollution",
+    return_only_polluted=True,
 ) -> gpd.GeoDataFrame:
     """
     Simulate the spread of pollution in a river network, based on proximity to pollution sources and pollutant levels.
@@ -24,6 +30,7 @@ def simulate_spill(
             pollution to be considered in the simulation. Default is 100.
         pollution_column (str, optional): The name of the column in `pollution_sources` that specifies pollution values.
             Default is "pollution".
+        return_only_polluted (bool, optional): Whether to return only the polluted rivers, or all rivers geometry.
 
     Returns:
         gpd.GeoDataFrame: A GeoDataFrame containing polygons representing areas affected by pollution. Each polygon
@@ -45,24 +52,39 @@ def simulate_spill(
         weight_remain = pd.DataFrame.from_dict(weight_remain, orient="index", columns=["remain"])
         result = pd.concat([result, weight_remain], axis=1)
     result = result.sum(axis=1)
-    subgraph = river_graph.subgraph(result.index).copy()
-    subgraph.graph["crs"] = local_crs
+    if return_only_polluted:
+        subgraph = river_graph.subgraph(result.index).copy()
+    else:
+        subgraph = river_graph.copy()
 
+    if subgraph.number_of_edges() == 0:
+        logger.info("No pollution has found, returning empty GeoDataFrame")
+        return gpd.GeoDataFrame()
+
+    subgraph.graph["crs"] = local_crs
     for u, v, data in subgraph.edges(data=True):
-        data["remain"] = (result.loc[u] + result.loc[v]) / 2
+        if u in result.index and v in result.index:
+            data["remain"] = (result.loc[u] + result.loc[v]) / 2
+        else:
+            data["remain"] = 0
 
     edges_gdf = graph_to_gdf(subgraph)
-
+    edges_gdf = (
+        edges_gdf.groupby("remain")
+        .agg({"geometry": unary_union})
+        .reset_index()
+        .set_geometry("geometry")
+        .set_crs(local_crs)
+    )
     polygons = polygonize(edges_gdf.geometry.apply(polygons_to_linestring).unary_union)
     enclosures = gpd.GeoSeries(list(polygons), crs=local_crs)
     enclosures_points = gpd.GeoDataFrame(geometry=enclosures.representative_point(), crs=enclosures.crs)
 
     joined = gpd.sjoin(enclosures_points, edges_gdf, how="inner", predicate="within").reset_index()
 
-    # joined = joined.loc[joined.groupby('index')['remain'].idxmax()]
-    # joined.set_index('index', inplace=True)
-    # joined["geometry"] = enclosures
-    means = joined.groupby("index")["remain"].mean()
+    means = joined.groupby("index")["remain"].apply(
+        lambda x: float(np.mean([val for val in x if val > 0])) if np.any(np.array(x) > 0) else 0
+    )
     joined = joined.drop_duplicates(subset="index")
     joined.set_index("index", inplace=True)
     joined["remain"] = means
