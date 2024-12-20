@@ -349,7 +349,8 @@ def mark_territory(eco_frame: EcoFrame, zone: gpd.GeoDataFrame = None) -> Territ
         total_area = sum(clip.geometry.area)
     if clip.empty:
         desc = "В границах проектной территории нет данных об объектах оказывающих влияние на экологию"
-        return TerritoryMark(0, "-", 0, desc, clip)
+        obj_msg = "В границы проектной территории не попадает влияние от обьектов, оказывающих влияние на экологию."
+        return TerritoryMark(0, obj_msg, 0, desc, clip)
     negative_types = list(eco_frame.negative_types.keys())
     clip["impact_percent"] = clip.geometry.area / total_area
     abs_mark = round(sum(clip["layer_impact"] * clip["impact_percent"]), 2)
