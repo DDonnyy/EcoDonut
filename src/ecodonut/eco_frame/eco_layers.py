@@ -82,6 +82,8 @@ default_layers_options: Dict[str, LayerOptions] = {
         initial_impact=4,
         fading=0.2,
         russian_name="ООПТ",
+        area_normalization=lambda x: min_max_normalization(np.sqrt(x), 0.1, 1, math.sqrt(10), math.sqrt(10000000)),
+        merge_radius=20,
     ),
     "water": LayerOptions(
         initial_impact=3,
