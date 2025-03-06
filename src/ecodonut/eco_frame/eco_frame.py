@@ -258,12 +258,23 @@ class EcoFrameCalculator:
         logger.debug("Combining geometry...")
         donuted_layers = combine_geometry(donuted_layers, self.impact_calculator)
         donuted_layers = donuted_layers.clip(self.territory, keep_geom_type=True)
+
+        if not donuted_layers.geometry.is_valid.all():
+            donuted_layers.geometry = donuted_layers.geometry.buffer(0)
+            donuted_layers = donuted_layers[donuted_layers.is_valid]
+
         logger.debug("Grouping geometry...")
         donuted_layers = (
             donuted_layers.groupby(["name", "layer_impact"])
             .agg({"type": "first", "source": "first", "geometry": lambda x: unary_union(x)})
             .reset_index()
         )
+        donuted_layers = gpd.GeoDataFrame(donuted_layers, geometry="geometry", crs=self.local_crs)
+
+        if not donuted_layers.geometry.is_valid.all():
+            donuted_layers.geometry = donuted_layers.geometry.buffer(0)
+            donuted_layers = donuted_layers[donuted_layers.is_valid]
+
         donuted_layers = EcoFrame(
             min_donut_count_radius=min_donut_count_radius,
             max_donut_count_radius=max_donut_count_radius,
