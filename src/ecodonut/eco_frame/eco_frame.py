@@ -352,11 +352,10 @@ def mark_territory(eco_frame: EcoFrame, zone: gpd.GeoDataFrame = None) -> Territ
     zone.to_crs(eco_frame.local_crs, inplace=True)
     if zone is None:
         clip = eco_frame.copy()
-
         total_area = sum(clip.geometry.area)
     else:
-        clip = eco_frame.clip(zone)
-
+        eco_frame_gdf = eco_frame[eco_frame.geometry.is_valid]
+        clip = eco_frame_gdf.clip(zone)
         total_area = sum(clip.geometry.area)
     if clip.empty:
         desc = "В границах проектной территории нет данных об объектах оказывающих влияние на экологию"
