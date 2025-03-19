@@ -39,31 +39,37 @@ def _calculate_impact(impact_list: list) -> float:
     return total_positive - total_negative
 
 
-class EcoFrame(gpd.GeoDataFrame):
+class EcoFrame:
     """
-    A GeoDataFrame-based class that represents an ecological frame (eco-frame),
+    Сlass that represents an ecological frame (eco-frame),
     storing geometry and associated ecological data with customizable settings.
     """
 
-    _metadata = ["min_donut_count_radius", "max_donut_count_radius", "negative_types", "positive_types", "local_crs"]
+    eco_layers_gdf: gpd.GeoDataFrame
+    negative_types: dict
+    positive_types: dict
+    min_donut_count_radius: int
+    max_donut_count_radius: int
 
-    def __init__(self, min_donut_count_radius, max_donut_count_radius, negative_types, positive_types, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    def __init__(
+        self,
+        eco_layers: gpd.GeoDataFrame,
+        min_donut_count_radius,
+        max_donut_count_radius,
+        negative_types,
+        positive_types,
+        local_crs,
+    ):
+        self.eco_layers_gdf = eco_layers
         self.negative_types = negative_types
         self.positive_types = positive_types
         self.min_donut_count_radius = min_donut_count_radius
         self.max_donut_count_radius = max_donut_count_radius
-        self.local_crs = self.crs
+        self.local_crs = local_crs
 
-    @property
-    def _constructor(self):
-        return EcoFrame
-
-    def __finalize__(self, other, method=None, **kwargs):
-        self = super().__finalize__(other, method=method, **kwargs)
-        for attr in self._metadata:
-            setattr(self, attr, getattr(other, attr, None))
-        return self
+    # @property
+    # def eco_layers_gdf(self) -> gpd.GeoDataFrame:
+    #     return self.eco_layers_gdf.copy()
 
 
 class EcoFrameCalculator:
@@ -275,16 +281,15 @@ class EcoFrameCalculator:
             donuted_layers.geometry = donuted_layers.geometry.buffer(0)
             donuted_layers = donuted_layers[donuted_layers.is_valid]
 
-        donuted_layers = EcoFrame(
+        eco_frame = EcoFrame(
+            eco_layers=donuted_layers,
             min_donut_count_radius=min_donut_count_radius,
             max_donut_count_radius=max_donut_count_radius,
             positive_types=positive_layers,
             negative_types=negative_layers,
-            data=donuted_layers,
-            geometry="geometry",
-            crs=self.local_crs,
+            local_crs=self.local_crs,
         )
-        return donuted_layers
+        return eco_frame
 
     def _distribute_levels(self, data: gpd.GeoDataFrame, resolution=4) -> gpd.GeoDataFrame:
         distributed = data.copy().apply(
@@ -347,16 +352,13 @@ def mark_territory(eco_frame: EcoFrame, zone: gpd.GeoDataFrame = None) -> Territ
         TerritoryMark: Calculated territory mark object containing impact assessment.
     """
     zone = zone.copy()
-    eco_frame.set_geometry("geometry", inplace=True)
-    eco_frame.to_crs(eco_frame.local_crs, inplace=True)
     zone.to_crs(eco_frame.local_crs, inplace=True)
-    if zone is None:
-        clip = eco_frame.copy()
 
+    if zone is None:
+        clip = eco_frame.eco_layers_gdf
         total_area = sum(clip.geometry.area)
     else:
-        clip = eco_frame.clip(zone)
-
+        clip = eco_frame.eco_layers_gdf.clip(zone)
         total_area = sum(clip.geometry.area)
     if clip.empty:
         desc = "В границах проектной территории нет данных об объектах оказывающих влияние на экологию"
@@ -479,8 +481,11 @@ def concat_ecoframes(eco_frame1: EcoFrame, eco_frame2: EcoFrame, impact_calculat
     Returns:
         EcoFrame: Merged EcoFrame containing combined ecological data and geometries.
     """
-    frame1 = eco_frame1.copy()
-    frame2 = eco_frame2.copy()
+    frame1 = eco_frame1.eco_layers_gdf.copy()
+    frame2 = eco_frame2.eco_layers_gdf.copy()
+
+    if frame1.crs != frame2.crs:
+        frame2 = frame2.to_crs(frame1.crs)
 
     negative_types = eco_frame1.negative_types.copy()
     negative_types.update(eco_frame2.negative_types)
@@ -498,13 +503,13 @@ def concat_ecoframes(eco_frame1: EcoFrame, eco_frame2: EcoFrame, impact_calculat
         .agg({"type": "first", "source": "first", "geometry": unary_union})
         .reset_index()
     )
+    new_frame = gpd.GeoDataFrame(new_frame, geometry="geometry", crs=eco_frame1.local_crs)
     new_frame = EcoFrame(
+        eco_layers=new_frame,
         min_donut_count_radius=eco_frame1.min_donut_count_radius,
         max_donut_count_radius=eco_frame1.max_donut_count_radius,
         positive_types=negative_types,
         negative_types=negative_types,
-        data=new_frame,
-        geometry="geometry",
-        crs=frame1.crs,
+        local_crs=eco_frame1.local_crs,
     )
     return new_frame

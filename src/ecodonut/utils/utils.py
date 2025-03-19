@@ -126,9 +126,9 @@ def merge_objs_by_buffer(gdf: gpd.GeoDataFrame, buffer: int) -> gpd.GeoDataFrame
     """
 
     def unique_list(data):
-        if len(tuple(data)) == 1:
-            return data
-        return tuple(data)
+        if len(tuple(set(data))) == 1:
+            return list(set(data))[0]
+        return tuple(set(data))
 
     crs = gdf.crs
     buffered = gpd.GeoDataFrame(geometry=[Polygon(x) for x in gdf.buffer(buffer).union_all().geoms], crs=crs)
