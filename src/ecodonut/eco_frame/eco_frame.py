@@ -23,19 +23,18 @@ def _negative_fading(layers_count: int, i: int) -> float:
     return sigmoid_value
 
 
-def _calculate_impact(impact_list: list) -> float:
+def _calculate_impact(impact_list: list,max_value,min_value) -> float:
+
     if len(impact_list) == 1:
         return impact_list[0]
     positive_list = sorted([x for x in impact_list if x > 0])
     negative_list = sorted([abs(x) for x in impact_list if x < 0])
     total_positive = 0
     for imp in positive_list:
-        total_positive = np.sqrt(imp**2 + total_positive**2)
-
+        total_positive = min(np.sqrt(imp**2 + total_positive**2),abs(max_value))
     total_negative = 0
     for imp in negative_list:
-        total_negative = np.sqrt(imp**2 + total_negative**2)
-
+        total_negative = min(np.sqrt(imp**2 + total_negative**2),abs(min_value))
     return total_positive - total_negative
 
 
@@ -164,8 +163,9 @@ class EcoFrameCalculator:
             russian_name = layer_options.russian_name
             union, union_buff = layer_options.geom_union_unionbuff
             if union:
+                logger.debug(f'Creating union for layer {layer_name} in radius {union_buff}')
                 cur_eco_layer.geometry = cur_eco_layer.geometry.simplify(layer_options.simplify)
-                cur_eco_layer = cur_eco_layer.geometry.buffer(union_buff, 8).union_all().buffer(-union_buff, 8)
+                cur_eco_layer = cur_eco_layer.geometry.buffer(union_buff, resolution=4).union_all().buffer(-union_buff, resolution=4)
                 cur_eco_layer = gpd.GeoDataFrame(geometry=[cur_eco_layer], crs=self.local_crs)
                 cur_eco_layer["name"] = russian_name
 
@@ -228,6 +228,7 @@ class EcoFrameCalculator:
                 )
             cur_eco_layer["type"] = layer_name
             cur_eco_layer.geometry = cur_eco_layer.geometry.simplify(layer_options.simplify)
+
             if layer_options.make_donuts:
                 layers_to_donut.append(cur_eco_layer)
             else:
@@ -235,48 +236,49 @@ class EcoFrameCalculator:
                 cur_eco_layer["source"] = True
                 backgrounds.append(cur_eco_layer)
         logger.debug("Donutting layers...")
-        donuted_layers = gpd.GeoDataFrame(
-            pd.concat(layers_to_donut, ignore_index=True), geometry="geometry", crs=self.local_crs
-        )
 
-        donuted_layers = donuted_layers.filter(
-            items=["name", "type", "initial_impact", "total_impact_radius", "geometry"]
-        )
-
-        logger.debug("Calculation layer's count...")
-        if self.min_donut_count_radius is None and self.max_donut_count_radius is None:
-            donuted_layers["layers_count"] = calc_layer_count(donuted_layers, min_layer_count, max_layer_count)
-            impacts = np.abs(donuted_layers["total_impact_radius"])
-            min_layer_rad = int(np.min(impacts))
-            max_layer_rad = int(np.max(impacts))
-        else:
-            min_layer_count, min_layer_rad = self.min_donut_count_radius
-            max_layer_count, max_layer_rad = self.max_donut_count_radius
-            donuted_layers["layers_count"] = calc_layer_count(
-                donuted_layers, min_layer_count, max_layer_count, min_layer_rad, max_layer_rad
+        if len(layers_to_donut) > 0:
+            donuted_layers = gpd.GeoDataFrame(
+                pd.concat(layers_to_donut, ignore_index=True), geometry="geometry", crs=self.local_crs
             )
 
-        min_donut_count_radius = min_layer_count, min_layer_rad
-        max_donut_count_radius = max_layer_count, max_layer_rad
-        logger.debug("Distributing levels...")
-        donuted_layers = self._distribute_levels(donuted_layers)
+            donuted_layers = donuted_layers.filter(
+                items=["name", "type", "initial_impact", "total_impact_radius", "geometry"]
+            )
+
+            logger.debug("Calculation layer's count...")
+            if self.min_donut_count_radius is None and self.max_donut_count_radius is None:
+                donuted_layers["layers_count"] = calc_layer_count(donuted_layers, min_layer_count, max_layer_count)
+                impacts = np.abs(donuted_layers["total_impact_radius"])
+                min_layer_rad = int(np.min(impacts))
+                max_layer_rad = int(np.max(impacts))
+            else:
+                min_layer_count, min_layer_rad = self.min_donut_count_radius
+                max_layer_count, max_layer_rad = self.max_donut_count_radius
+                donuted_layers["layers_count"] = calc_layer_count(
+                    donuted_layers, min_layer_count, max_layer_count, min_layer_rad, max_layer_rad
+                )
+
+            min_donut_count_radius = min_layer_count, min_layer_rad
+            max_donut_count_radius = max_layer_count, max_layer_rad
+
+
+            logger.debug("Distributing levels...")
+            donuted_layers = self._distribute_levels(donuted_layers)
+        else:
+            donuted_layers = gpd.GeoDataFrame()
         donuted_layers = pd.concat([donuted_layers] + backgrounds, ignore_index=True)
+        min_impact = donuted_layers["initial_impact"].min()
+        max_impact = donuted_layers["initial_impact"].max()
+
         logger.debug("Combining geometry...")
-        donuted_layers = combine_geometry(donuted_layers, self.impact_calculator)
+        donuted_layers = combine_geometry(donuted_layers, self.impact_calculator,max_value=max_impact,min_value=min_impact)
+        # donuted_layers['layer_impact'] = donuted_layers['layer_impact'].clip(lower=min_impact, upper=max_impact)
         donuted_layers = donuted_layers.clip(self.territory, keep_geom_type=True)
 
-        if not donuted_layers.geometry.is_valid.all():
-            donuted_layers.geometry = donuted_layers.geometry.buffer(0)
-            donuted_layers = donuted_layers[donuted_layers.is_valid]
-
         logger.debug("Grouping geometry...")
-        donuted_layers = (
-            donuted_layers.groupby(["name", "layer_impact"])
-            .agg({"type": "first", "source": "first", "geometry": lambda x: unary_union(x)})
-            .reset_index()
-        )
-        donuted_layers = gpd.GeoDataFrame(donuted_layers, geometry="geometry", crs=self.local_crs)
-
+        donuted_layers = donuted_layers.dissolve(by="layer_impact").reset_index()
+        return donuted_layers
         if not donuted_layers.geometry.is_valid.all():
             donuted_layers.geometry = donuted_layers.geometry.buffer(0)
             donuted_layers = donuted_layers[donuted_layers.is_valid]
@@ -291,7 +293,7 @@ class EcoFrameCalculator:
         )
         return eco_frame
 
-    def _distribute_levels(self, data: gpd.GeoDataFrame, resolution=4) -> gpd.GeoDataFrame:
+    def _distribute_levels(self, data: gpd.GeoDataFrame, resolution=8) -> gpd.GeoDataFrame:
         distributed = data.copy().apply(
             create_buffers,
             resolution=resolution,
@@ -496,7 +498,7 @@ def concat_ecoframes(eco_frame1: EcoFrame, eco_frame2: EcoFrame, impact_calculat
     ind_to_change = frame1.sjoin(frame2).index.unique()
 
     new_frame = pd.concat([frame1.loc[ind_to_change], frame2], ignore_index=True)
-    new_frame = combine_geometry(new_frame, impact_calculator, "sum")
+    new_frame = combine_geometry(new_frame, impact_calculator)
     new_frame = pd.concat([frame1.drop(ind_to_change), new_frame], ignore_index=True)
     new_frame = (
         new_frame.groupby(["name", "layer_impact"])
