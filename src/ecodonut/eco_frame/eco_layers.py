@@ -22,7 +22,7 @@ class LayerOptions:
     # second value stands for union buffer, it actually will do geometry.buffer(val).unary_union.buffer(-val)
     geom_union_unionbuff: Tuple[bool, int] = (False, 0)
 
-    simplify: int = 10
+    simplify: int = 5
     merge_radius: int | None = None  # if not None will merge objects in given radius
 
 
@@ -96,7 +96,7 @@ default_layers_options: Dict[str, LayerOptions] = {
         fading=0.15,
         russian_name="Зелёная зона",
         make_donuts=False,
-        simplify=50,
-        geom_union_unionbuff=(True, 200),
+        simplify=20,
+        geom_union_unionbuff=(True, 250),
     ),
 }

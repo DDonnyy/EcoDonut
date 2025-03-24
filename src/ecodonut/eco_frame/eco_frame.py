@@ -1,4 +1,5 @@
 import math
+import os
 from typing import Callable, Dict, Tuple
 
 import geopandas as gpd
@@ -6,6 +7,7 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 from shapely.ops import unary_union
+from tqdm.contrib.concurrent import process_map, thread_map
 
 from ecodonut.eco_frame.eco_layers import LayerOptions, default_layers_options
 from ecodonut.utils import calc_layer_count, combine_geometry, create_buffers, merge_objs_by_buffer
@@ -23,7 +25,7 @@ def _negative_fading(layers_count: int, i: int) -> float:
     return sigmoid_value
 
 
-def _calculate_impact(impact_list: list,max_value,min_value) -> float:
+def _calculate_impact(impact_list: list, max_value, min_value) -> float:
 
     if len(impact_list) == 1:
         return impact_list[0]
@@ -31,10 +33,10 @@ def _calculate_impact(impact_list: list,max_value,min_value) -> float:
     negative_list = sorted([abs(x) for x in impact_list if x < 0])
     total_positive = 0
     for imp in positive_list:
-        total_positive = min(np.sqrt(imp**2 + total_positive**2),abs(max_value))
+        total_positive = min(np.sqrt(imp**2 + total_positive**2), abs(max_value))
     total_negative = 0
     for imp in negative_list:
-        total_negative = min(np.sqrt(imp**2 + total_negative**2),abs(min_value))
+        total_negative = min(np.sqrt(imp**2 + total_negative**2), abs(min_value))
     return total_positive - total_negative
 
 
@@ -126,6 +128,7 @@ class EcoFrameCalculator:
         eco_layers: Dict[str, gpd.GeoDataFrame],
         min_layer_count: int = 2,
         max_layer_count: int = 10,
+        multiprocess: bool = True,
     ) -> EcoFrame:
         """
         Creates an EcoFrame from specified ecological layers.
@@ -134,6 +137,7 @@ class EcoFrameCalculator:
             eco_layers (Dict[str, GeoDataFrame]): Dictionary of ecological layers by name.
             min_layer_count (int, optional): Minimum count of layers to include in donut calculation.
             max_layer_count (int, optional): Maximum count of layers to include in donut calculation.
+            multiprocess (bool, optional): Flag to enable multiprocessing.
 
         Returns:
             EcoFrame: Generated EcoFrame instance containing ecological impact data.
@@ -142,100 +146,34 @@ class EcoFrameCalculator:
         backgrounds = []
         positive_layers = {}
         negative_layers = {}
-        for layer_name, cur_eco_layer in eco_layers.items():
-            if cur_eco_layer is None:
+
+        iterables = [
+            (layer_name, eco_layer, self.layer_options[layer_name], self.local_crs)
+            for layer_name, eco_layer in eco_layers.items()
+            if eco_layer is not None
+        ]
+        if multiprocess:
+            results = process_map(_process_layer, iterables, max_workers=os.cpu_count())
+        else:
+            results = thread_map(_process_layer, iterables)
+
+        for result in results:
+            if result is None:
                 continue
-            if layer_name not in self.layer_options:
-                raise RuntimeError(f"{layer_name} is not provided in layer options")
-            logger.debug(f'Processing layer "{layer_name}"')
-            cur_eco_layer = cur_eco_layer.copy()
+            result_type, cur_eco_layer = result
+            layer_name = cur_eco_layer["type"].iloc[0]
 
-            layer_options = self.layer_options[layer_name]
-            cur_eco_layer.to_crs(self.local_crs, inplace=True)
-
-            # apllying geometry functions
-            geom_func = layer_options.geom_func
-            if geom_func is not None:
-                cur_eco_layer.geometry = cur_eco_layer.geometry.apply(geom_func)
-            cur_eco_layer = cur_eco_layer[cur_eco_layer.geom_type.isin(["MultiPolygon", "Polygon"])]
-
-            # merging geometry if indeed
-            russian_name = layer_options.russian_name
-            union, union_buff = layer_options.geom_union_unionbuff
-            if union:
-                logger.debug(f'Creating union for layer {layer_name} in radius {union_buff}')
-                cur_eco_layer.geometry = cur_eco_layer.geometry.simplify(layer_options.simplify)
-                cur_eco_layer = cur_eco_layer.geometry.buffer(union_buff, resolution=4).union_all().buffer(-union_buff, resolution=4)
-                cur_eco_layer = gpd.GeoDataFrame(geometry=[cur_eco_layer], crs=self.local_crs)
-                cur_eco_layer["name"] = russian_name
-
-            # filling "name" column
-            if "name" not in cur_eco_layer.columns:
-                cur_eco_layer["name"] = f"{russian_name} без названия"
-            cur_eco_layer.fillna({"name": f"{russian_name} без названия"}, inplace=True)
-
-            # calculation INITIAL_IMPACT coefficient for layer
-            initial_impact = layer_options.initial_impact
-
-            cur_eco_layer["initial_impact"] = (
-                initial_impact
-                if isinstance(initial_impact, int)
-                else (cur_eco_layer[initial_impact[0]].apply(initial_impact[1]))
-            )
+            # Update positive/negative layers
             if (cur_eco_layer["initial_impact"] > 0).all():
-                positive_layers.update({layer_name: russian_name})
+                positive_layers.update({layer_name: self.layer_options[layer_name].russian_name})
             else:
-                negative_layers.update({layer_name: russian_name})
+                negative_layers.update({layer_name: self.layer_options[layer_name].russian_name})
 
-            # calculation Fading coefficient for layer
-            fading = layer_options.fading
-            cur_eco_layer["fading"] = (
-                fading if isinstance(fading, float) else (cur_eco_layer[fading[0]].apply(fading[1]))
-            )
-
-            # calculation area_normalization coefficient for layer
-            area_normalization = layer_options.area_normalization
-            cur_eco_layer["area_normalization"] = (
-                1 if area_normalization is None else (area_normalization(cur_eco_layer.area))
-            )
-
-            # calculation total_impact_radius in meters for layer
-            cur_eco_layer["total_impact_radius"] = np.round(
-                cur_eco_layer["initial_impact"] * cur_eco_layer["fading"] * cur_eco_layer["area_normalization"] * 1000,
-                1,
-            )
-
-            cur_eco_layer["geometry"] = cur_eco_layer.geometry
-
-            # merging objects if merge_radius
-            merge_buff = layer_options.merge_radius
-            if merge_buff is not None:
-                cur_eco_layer = merge_objs_by_buffer(cur_eco_layer, merge_buff)
-                cur_eco_layer["initial_impact"] = cur_eco_layer["initial_impact"].apply(
-                    lambda x: (
-                        min(x)
-                        if isinstance(x, tuple) and all(i < 0 for i in x)
-                        else max(x) if isinstance(x, tuple) and all(i > 0 for i in x) else x
-                    )
-                )
-
-                cur_eco_layer["total_impact_radius"] = cur_eco_layer["total_impact_radius"].apply(
-                    lambda x: (
-                        min(x)
-                        if isinstance(x, tuple) and all(i < 0 for i in x)
-                        else max(x) if isinstance(x, tuple) and all(i > 0 for i in x) else x
-                    )
-                )
-            cur_eco_layer["type"] = layer_name
-            cur_eco_layer.geometry = cur_eco_layer.geometry.simplify(layer_options.simplify)
-
-            if layer_options.make_donuts:
+            # Add to appropriate list
+            if result_type == "donut":
                 layers_to_donut.append(cur_eco_layer)
             else:
-                cur_eco_layer["layer_impact"] = cur_eco_layer["initial_impact"]
-                cur_eco_layer["source"] = True
                 backgrounds.append(cur_eco_layer)
-        logger.debug("Donutting layers...")
 
         if len(layers_to_donut) > 0:
             donuted_layers = gpd.GeoDataFrame(
@@ -262,17 +200,21 @@ class EcoFrameCalculator:
             min_donut_count_radius = min_layer_count, min_layer_rad
             max_donut_count_radius = max_layer_count, max_layer_rad
 
-
             logger.debug("Distributing levels...")
+            donuted_layers = donuted_layers.dissolve(
+                by=["type", "initial_impact", "total_impact_radius"], aggfunc={"layers_count": 'max'}
+            ).reset_index()
             donuted_layers = self._distribute_levels(donuted_layers)
         else:
             donuted_layers = gpd.GeoDataFrame()
         donuted_layers = pd.concat([donuted_layers] + backgrounds, ignore_index=True)
-        min_impact = donuted_layers["initial_impact"].min()
-        max_impact = donuted_layers["initial_impact"].max()
-
+        min_impact = donuted_layers["layer_impact"].min()
+        max_impact = donuted_layers["layer_impact"].max()
+        logger.debug(f"Max impact: {max_impact}, Min impact: {min_impact}")
         logger.debug("Combining geometry...")
-        donuted_layers = combine_geometry(donuted_layers, self.impact_calculator,max_value=max_impact,min_value=min_impact)
+        donuted_layers = combine_geometry(
+            donuted_layers, self.impact_calculator, max_value=max_impact, min_value=min_impact
+        )
         # donuted_layers['layer_impact'] = donuted_layers['layer_impact'].clip(lower=min_impact, upper=max_impact)
         donuted_layers = donuted_layers.clip(self.territory, keep_geom_type=True)
 
@@ -304,6 +246,90 @@ class EcoFrameCalculator:
         return gpd.GeoDataFrame(
             pd.concat(distributed.tolist(), ignore_index=True), geometry="geometry", crs=self.local_crs
         )
+
+
+def _process_layer(layer_item):
+    layer_name, eco_layer, layer_options, local_crs = layer_item
+    logger.debug(f'Processing layer "{layer_name}"')
+
+    eco_layer = eco_layer.to_crs(local_crs)
+
+    # applying geometry functions
+    geom_func = layer_options.geom_func
+    if geom_func is not None:
+        eco_layer.geometry = eco_layer.geometry.apply(geom_func)
+    eco_layer = eco_layer[eco_layer.geom_type.isin(["MultiPolygon", "Polygon"])]
+
+    # merging geometry if needed
+    russian_name = layer_options.russian_name
+    union, union_buff = layer_options.geom_union_unionbuff
+    if union:
+        logger.debug(f"Creating union for layer {layer_name} in radius {union_buff}")
+        eco_layer.geometry = eco_layer.geometry.simplify(layer_options.simplify)
+        eco_layer = eco_layer.geometry.buffer(union_buff).union_all().buffer(-union_buff)
+        eco_layer = gpd.GeoDataFrame(geometry=[eco_layer], crs=local_crs)
+        eco_layer["name"] = russian_name
+
+    # filling "name" column
+    if "name" not in eco_layer.columns:
+        eco_layer["name"] = f"{russian_name} без названия"
+    eco_layer.fillna({"name": f"{russian_name} без названия"}, inplace=True)
+
+    # calculation INITIAL_IMPACT coefficient for layer
+    initial_impact = layer_options.initial_impact
+    eco_layer["initial_impact"] = (
+        initial_impact if isinstance(initial_impact, int) else (eco_layer[initial_impact[0]].apply(initial_impact[1]))
+    )
+
+    # calculation Fading coefficient for layer
+    fading = layer_options.fading
+    eco_layer["fading"] = fading if isinstance(fading, float) else (eco_layer[fading[0]].apply(fading[1]))
+
+    # calculation area_normalization coefficient for layer
+    area_normalization = layer_options.area_normalization
+    eco_layer["area_normalization"] = 1 if area_normalization is None else (area_normalization(eco_layer.area))
+
+    # calculation total_impact_radius in meters for layer
+    eco_layer["total_impact_radius"] = np.round(
+        eco_layer["initial_impact"] * eco_layer["fading"] * eco_layer["area_normalization"] * 1000,
+        1,
+    )
+
+    eco_layer["geometry"] = eco_layer.geometry
+
+    # merging objects if merge_radius
+    merge_buff = layer_options.merge_radius
+    if merge_buff is not None:
+        eco_layer = merge_objs_by_buffer(eco_layer, merge_buff)
+        eco_layer["initial_impact"] = eco_layer["initial_impact"].apply(
+            lambda x: (
+                min(x)
+                if isinstance(x, tuple) and all(i < 0 for i in x)
+                else max(x) if isinstance(x, tuple) and all(i > 0 for i in x) else x
+            )
+        )
+        eco_layer["total_impact_radius"] = eco_layer["total_impact_radius"].apply(
+            lambda x: (
+                min(x)
+                if isinstance(x, tuple) and all(i < 0 for i in x)
+                else max(x) if isinstance(x, tuple) and all(i > 0 for i in x) else x
+            )
+        )
+    eco_layer["type"] = layer_name
+    eco_layer.geometry = eco_layer.geometry.simplify(layer_options.simplify)
+
+    invalid_geom = eco_layer[~eco_layer.geometry.is_valid].index
+    if len(invalid_geom) > 0:
+        eco_layer.loc[invalid_geom, "geometry"] = eco_layer.loc[invalid_geom].geometry.buffer(0)
+        still_invalid_idx = eco_layer.loc[invalid_geom][~eco_layer.loc[invalid_geom].geometry.is_valid].index
+        if not still_invalid_idx.empty:
+            eco_layer = eco_layer.drop(still_invalid_idx)
+    if layer_options.make_donuts:
+        return ("donut", eco_layer)
+    else:
+        eco_layer["layer_impact"] = eco_layer["initial_impact"]
+        eco_layer["source"] = True
+        return ("background", eco_layer)
 
 
 class TerritoryMark:
