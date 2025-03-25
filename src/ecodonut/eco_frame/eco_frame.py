@@ -1,13 +1,13 @@
 import math
-import os
-from typing import Callable, Dict, Tuple
+from dataclasses import dataclass
+from typing import Any, Callable
 
 import geopandas as gpd
 import numpy as np
 import pandas as pd
 from loguru import logger
 from shapely.ops import unary_union
-from tqdm.contrib.concurrent import process_map, thread_map
+from tqdm.contrib.concurrent import thread_map
 
 from ecodonut.eco_frame.eco_layers import LayerOptions, default_layers_options
 from ecodonut.utils import calc_layer_count, combine_geometry, create_buffers, merge_objs_by_buffer
@@ -40,37 +40,29 @@ def _calculate_impact(impact_list: list, max_value, min_value) -> float:
     return total_positive - total_negative
 
 
+@dataclass
 class EcoFrame:
     """
-    Сlass that represents an ecological frame (eco-frame),
-    storing geometry and associated ecological data with customizable settings.
+    A class representing an ecological frame (eco-frame) that stores geometry and associated
+    ecological data with customizable settings for analysis.
+
+    Attributes:
+        eco_frame_gdf: GeoDataFrame containing ecological influence layers (positive/negative impact zones)
+        eco_influencers_gdf: GeoDataFrame containing geometries of negative influence sources and their buffers
+        negative_types: Dictionary defining the types of negative ecological influences in the eco-frame
+        positive_types: Dictionary defining the types of positive ecological influences in the eco-frame
+        min_donut_count_radius: Tuple containing (minimum number of influence zones, radius) for donut segmentation
+        max_donut_count_radius: Tuple containing (maximum number of influence zones, radius) for donut segmentation
+        local_crs: The coordinate reference system used for spatial operations
     """
 
-    eco_layers_gdf: gpd.GeoDataFrame
-    negative_types: dict
-    positive_types: dict
-    min_donut_count_radius: int
-    max_donut_count_radius: int
-
-    def __init__(
-        self,
-        eco_layers: gpd.GeoDataFrame,
-        min_donut_count_radius,
-        max_donut_count_radius,
-        negative_types,
-        positive_types,
-        local_crs,
-    ):
-        self.eco_layers_gdf = eco_layers
-        self.negative_types = negative_types
-        self.positive_types = positive_types
-        self.min_donut_count_radius = min_donut_count_radius
-        self.max_donut_count_radius = max_donut_count_radius
-        self.local_crs = local_crs
-
-    # @property
-    # def eco_layers_gdf(self) -> gpd.GeoDataFrame:
-    #     return self.eco_layers_gdf.copy()
+    eco_frame_gdf: gpd.GeoDataFrame
+    eco_influencers_gdf: gpd.GeoDataFrame
+    negative_types: dict[str, str]
+    positive_types: dict[str, str]
+    min_donut_count_radius: tuple[int, float]
+    max_donut_count_radius: tuple[int, float]
+    local_crs: Any
 
 
 class EcoFrameCalculator:
@@ -95,10 +87,10 @@ class EcoFrameCalculator:
         self,
         territory: gpd.GeoDataFrame,
         settings_from: EcoFrame = None,
-        layer_options: Dict[str, LayerOptions] = None,
+        layer_options: dict[str, LayerOptions] = None,
         positive_fading_func: Callable[[int, int], float] = _positive_fading,
         negative_fading_func: Callable[[int, int], float] = _negative_fading,
-        impact_calculator: Callable[[Tuple[float, ...]], float] = _calculate_impact,
+        impact_calculator: Callable[[tuple[float, ...]], float] = _calculate_impact,
     ):
         """
         Initializes the EcoFrameCalculator with specified settings.
@@ -125,10 +117,9 @@ class EcoFrameCalculator:
 
     def evaluate_ecoframe(
         self,
-        eco_layers: Dict[str, gpd.GeoDataFrame],
+        eco_layers: dict[str, gpd.GeoDataFrame],
         min_layer_count: int = 2,
         max_layer_count: int = 10,
-        multiprocess: bool = True,
     ) -> EcoFrame:
         """
         Creates an EcoFrame from specified ecological layers.
@@ -137,11 +128,14 @@ class EcoFrameCalculator:
             eco_layers (Dict[str, GeoDataFrame]): Dictionary of ecological layers by name.
             min_layer_count (int, optional): Minimum count of layers to include in donut calculation.
             max_layer_count (int, optional): Maximum count of layers to include in donut calculation.
-            multiprocess (bool, optional): Flag to enable multiprocessing.
+
 
         Returns:
             EcoFrame: Generated EcoFrame instance containing ecological impact data.
         """
+        max_donut_count_radius = None
+        min_donut_count_radius = None
+        eco_influencers_gdf = gpd.GeoDataFrame()
         layers_to_donut = []
         backgrounds = []
         positive_layers = {}
@@ -152,10 +146,7 @@ class EcoFrameCalculator:
             for layer_name, eco_layer in eco_layers.items()
             if eco_layer is not None
         ]
-        if multiprocess:
-            results = process_map(_process_layer, iterables, max_workers=os.cpu_count())
-        else:
-            results = thread_map(_process_layer, iterables)
+        results = thread_map(_process_layer, iterables)
 
         for result in results:
             if result is None:
@@ -176,35 +167,36 @@ class EcoFrameCalculator:
                 backgrounds.append(cur_eco_layer)
 
         if len(layers_to_donut) > 0:
-            donuted_layers = gpd.GeoDataFrame(
+            layers_to_donut = gpd.GeoDataFrame(
                 pd.concat(layers_to_donut, ignore_index=True), geometry="geometry", crs=self.local_crs
             )
 
-            donuted_layers = donuted_layers.filter(
+            layers_to_donut = layers_to_donut.filter(
                 items=["name", "type", "initial_impact", "total_impact_radius", "geometry"]
             )
 
             logger.debug("Calculation layer's count...")
             if self.min_donut_count_radius is None and self.max_donut_count_radius is None:
-                donuted_layers["layers_count"] = calc_layer_count(donuted_layers, min_layer_count, max_layer_count)
-                impacts = np.abs(donuted_layers["total_impact_radius"])
+                layers_to_donut["layers_count"] = calc_layer_count(layers_to_donut, min_layer_count, max_layer_count)
+                impacts = np.abs(layers_to_donut["total_impact_radius"])
                 min_layer_rad = int(np.min(impacts))
                 max_layer_rad = int(np.max(impacts))
             else:
                 min_layer_count, min_layer_rad = self.min_donut_count_radius
                 max_layer_count, max_layer_rad = self.max_donut_count_radius
-                donuted_layers["layers_count"] = calc_layer_count(
-                    donuted_layers, min_layer_count, max_layer_count, min_layer_rad, max_layer_rad
+                layers_to_donut["layers_count"] = calc_layer_count(
+                    layers_to_donut, min_layer_count, max_layer_count, min_layer_rad, max_layer_rad
                 )
 
             min_donut_count_radius = min_layer_count, min_layer_rad
             max_donut_count_radius = max_layer_count, max_layer_rad
-
+            eco_influencers_gdf = _generate_eco_influencers(layers_to_donut)
             logger.debug("Distributing levels...")
-            donuted_layers = donuted_layers.dissolve(
-                by=["type", "initial_impact", "total_impact_radius"], aggfunc={"layers_count": 'max'}
+            layers_to_donut = layers_to_donut.dissolve(
+                by=["type", "initial_impact", "total_impact_radius"], aggfunc={"layers_count": "max"}
             ).reset_index()
-            donuted_layers = self._distribute_levels(donuted_layers)
+            donuted_layers = self._distribute_levels(layers_to_donut)
+            del layers_to_donut
         else:
             donuted_layers = gpd.GeoDataFrame()
         donuted_layers = pd.concat([donuted_layers] + backgrounds, ignore_index=True)
@@ -212,21 +204,20 @@ class EcoFrameCalculator:
         max_impact = donuted_layers["layer_impact"].max()
         logger.debug(f"Max impact: {max_impact}, Min impact: {min_impact}")
         logger.debug("Combining geometry...")
-        donuted_layers = combine_geometry(
-            donuted_layers, self.impact_calculator, max_value=max_impact, min_value=min_impact
-        )
-        # donuted_layers['layer_impact'] = donuted_layers['layer_impact'].clip(lower=min_impact, upper=max_impact)
-        donuted_layers = donuted_layers.clip(self.territory, keep_geom_type=True)
+        eco_frame = combine_geometry(donuted_layers, self.impact_calculator, max_value=max_impact, min_value=min_impact)
+        del donuted_layers
+        eco_frame = eco_frame.clip(self.territory, keep_geom_type=True)
 
         logger.debug("Grouping geometry...")
-        donuted_layers = donuted_layers.dissolve(by="layer_impact").reset_index()
-        return donuted_layers
-        if not donuted_layers.geometry.is_valid.all():
-            donuted_layers.geometry = donuted_layers.geometry.buffer(0)
-            donuted_layers = donuted_layers[donuted_layers.is_valid]
+        eco_frame = eco_frame.dissolve(by=["layer_impact", "is_source"]).reset_index()
+
+        if not eco_frame.geometry.is_valid.all():
+            eco_frame.geometry = eco_frame.geometry.buffer(0)
+            eco_frame = eco_frame[eco_frame.is_valid]
 
         eco_frame = EcoFrame(
-            eco_layers=donuted_layers,
+            eco_frame_gdf=eco_frame,
+            eco_influencers_gdf=eco_influencers_gdf,
             min_donut_count_radius=min_donut_count_radius,
             max_donut_count_radius=max_donut_count_radius,
             positive_types=positive_layers,
@@ -248,10 +239,25 @@ class EcoFrameCalculator:
         )
 
 
+def _generate_eco_influencers(eco_layers):
+    eco_influencers_gdf = eco_layers.copy()
+    eco_influencers_gdf_buffered = eco_influencers_gdf.buffer(
+        np.abs(eco_influencers_gdf["total_impact_radius"]), resolution=4
+    )
+    eco_influencers_gdf_buffered = eco_influencers_gdf_buffered.difference(eco_influencers_gdf.geometry, align=True)
+    eco_influencers_gdf_buffered = gpd.GeoDataFrame(
+        geometry=eco_influencers_gdf_buffered, index=eco_influencers_gdf_buffered.index, crs=eco_influencers_gdf.crs
+    )
+    eco_influencers_gdf["is_source"] = True
+    eco_influencers_gdf_buffered["is_source"] = False
+    return pd.concat([eco_influencers_gdf, eco_influencers_gdf_buffered])
+
+
 def _process_layer(layer_item):
     layer_name, eco_layer, layer_options, local_crs = layer_item
     logger.debug(f'Processing layer "{layer_name}"')
-
+    if len(eco_layer) == 0:
+        return None
     eco_layer = eco_layer.to_crs(local_crs)
 
     # applying geometry functions
@@ -325,176 +331,11 @@ def _process_layer(layer_item):
         if not still_invalid_idx.empty:
             eco_layer = eco_layer.drop(still_invalid_idx)
     if layer_options.make_donuts:
-        return ("donut", eco_layer)
+        return "donut", eco_layer
     else:
         eco_layer["layer_impact"] = eco_layer["initial_impact"]
-        eco_layer["source"] = True
-        return ("background", eco_layer)
-
-
-class TerritoryMark:
-    absolute_mark: float = None
-    absolute_mark_description: str = None
-    relative_mark: float = None
-    relative_mark_description: str = None
-    clipped_ecoframe: gpd.GeoDataFrame = None
-
-    def __init__(
-        self,
-        absolute_mark: float,
-        absolute_mark_description: str,
-        relative_mark: float,
-        relative_mark_description: str,
-        clipped_ecoframe: gpd.GeoDataFrame,
-    ):
-        self.absolute_mark = absolute_mark
-        self.absolute_mark_description = absolute_mark_description
-        self.relative_mark = relative_mark
-        self.relative_mark_description = relative_mark_description
-        self.clipped_ecoframe = clipped_ecoframe
-
-    def __str__(self):
-        area = self.clipped_ecoframe.geometry.area.sum() if self.clipped_ecoframe is not None else "Неизвестно"
-        return (
-            f"Полная оценка территории:\n"
-            f"  Абсолютная оценка: {self.absolute_mark}\n"
-            f"  Описание объектов: {self.absolute_mark_description}\n\n"
-            f"  Относительная оценка: {self.relative_mark}\n"
-            f"  Интерпретация оценки: {self.relative_mark_description}\n\n"
-            f"  Площадь: {area}\n"
-        )
-
-    def __repr__(self):
-        return self.__str__()
-
-
-def mark_territory(eco_frame: EcoFrame, zone: gpd.GeoDataFrame = None) -> TerritoryMark:
-    """
-    Generates a territory mark by assessing ecological impact within a specified zone.
-
-    Args:
-        eco_frame (EcoFrame): The eco-frame containing ecological layers.
-        zone (GeoDataFrame, optional): Specific area to calculate ecological impact for.
-
-    Returns:
-        TerritoryMark: Calculated territory mark object containing impact assessment.
-    """
-    zone = zone.copy()
-    zone.to_crs(eco_frame.local_crs, inplace=True)
-    if zone is None:
-        clip = eco_frame.eco_layers_gdf
-        total_area = sum(clip.geometry.area)
-    else:
-        clip = eco_frame.eco_layers_gdf.clip(zone)
-
-        total_area = sum(clip.geometry.area)
-    if clip.empty:
-        desc = "В границах проектной территории нет данных об объектах оказывающих влияние на экологию"
-        obj_msg = "В границы проектной территории не попадает влияние от обьектов, оказывающих влияние на экологию."
-        return TerritoryMark(0, obj_msg, 0, desc, clip)
-    negative_types = list(eco_frame.negative_types.keys())
-    clip["impact_percent"] = clip.geometry.area / total_area
-    abs_mark = round(sum(clip["layer_impact"] * clip["impact_percent"]), 2)
-
-    unique_sources = pd.DataFrame(
-        clip.apply(lambda x: list(zip(x["name"], x["type"], x["source"])), axis=1).explode().unique().tolist(),
-        columns=["name", "type", "source"],
-    )
-    negative_sources = unique_sources[unique_sources["source"]]
-    negative_sources = negative_sources[negative_sources["type"].isin(negative_types)]
-
-    negative_effectors = unique_sources[~unique_sources["source"]]
-    negative_effectors = negative_effectors[negative_effectors["type"].isin(negative_types)]
-    negative_effectors = negative_effectors[~negative_effectors["name"].isin(negative_sources["name"])]
-
-    if len(negative_sources) > 0:
-        obj_message = (
-            f"На проектной территории находятся {len(negative_sources)} источник(а/ов) негативного воздействия:"
-        )
-        for ind, source in negative_sources.reset_index(drop=True).iterrows():
-            name = source["name"]
-            russian_name = eco_frame.negative_types.get(source["type"])
-            if isinstance(name, str):
-                if russian_name in name:
-                    obj_message += f"\n{ind + 1}. {name}"
-                else:
-                    obj_message += f'\n{ind + 1}. {russian_name}: "{name}"'
-            if isinstance(name, tuple):
-                formatted_names = "\n    ".join(f"- {item}" for item in name)
-                obj_message += f'\n{ind + 1}. Множество объектов типа "{russian_name}":\n    {formatted_names}'
-    else:
-        obj_message = "\nИсточников негативного воздействия на проектной территории нет."
-
-    if len(negative_effectors) > 0:
-        obj_message += f"\n\nВ проектную территорию попадает влияние от {len(negative_effectors)} источник(а/ов) негативного воздействия:"
-        for ind, source in negative_effectors.reset_index(drop=True).iterrows():
-            name = source["name"]
-            russian_name = eco_frame.negative_types.get(source["type"])
-            if isinstance(name, str):
-                if russian_name in name:
-                    obj_message += f"\n{ind + 1}. {name}"
-                else:
-                    obj_message += f'\n{ind + 1}. {russian_name}: "{name}"'
-            if isinstance(name, tuple):
-                formatted_names = "\n    ".join(f"- {item}" for item in name)
-                obj_message += f'\n{ind + 1}. Множество объектов типа "{russian_name}":\n    {formatted_names}'
-
-    if (clip["layer_impact"] > 0).all():
-        desc = (
-            "Проектная территория имеет оценку 5 баллов по экологическому каркасу. Территория находится в зоне "
-            "влияния объектов, оказывающих только положительное влияние на окружающую среду."
-        )
-        return TerritoryMark(abs_mark, obj_message, 5, desc, clip)
-
-    if (clip["layer_impact"] < 0).all():
-        desc = (
-            "Проектная территория имеет оценку 0 баллов по экологическому каркасу. Территория находится в зоне "
-            "влияния объектов, оказывающих только отрицательное влияние на окружающую среду."
-        )
-        return TerritoryMark(abs_mark, obj_message, 0, desc, clip)
-
-    if abs_mark >= 2:
-        desc = (
-            "Проектная территория имеет оценку 4 балла по экологическому каркасу. Территория находится "
-            "преимущественно в зоне влияния объектов, оказывающих положительное влияние на окружающую среду."
-        )
-
-        return TerritoryMark(abs_mark, obj_message, 4, desc, clip)
-
-    if abs_mark > 0:
-        desc = (
-            "Проектная территория имеет оценку 3 балла по экологическому каркасу. Территория находится в зоне влияния "
-            "как положительных, так и отрицательных объектов, однако положительное влияние оказывает большее "
-            "воздействие чем отрицательное."
-        )
-
-        return TerritoryMark(abs_mark, obj_message, 3, desc, clip)
-
-    if abs_mark == 0:
-        desc = (
-            "Проектная территория имеет оценку 2.5 балла по экологическому каркасу. Территория находится в зоне "
-            "влияния как положительных, так и отрицательных объектов, однако положительные и негативные влияния "
-            "компенсируют друг друга."
-        )
-
-        return TerritoryMark(abs_mark, obj_message, 2.5, desc, clip)
-
-    if abs_mark >= -4:
-        desc = (
-            "Проектная территория имеет оценку 2 балла по экологическому каркасу. Территория находится в зоне влияния "
-            "как положительных, так и отрицательных объектов, однако отрицательное влияние оказывает большее "
-            "воздействие чем положительное."
-        )
-
-        return TerritoryMark(abs_mark, obj_message, 2, desc, clip)
-
-    if abs_mark < -4:
-        desc = (
-            "Проектная территория имеет оценку 1 балл по экологическому каркасу. Территория находится "
-            "преимущественно в зоне влияния объектов, оказывающих негативное влияние на окружающую среду."
-        )
-
-        return TerritoryMark(abs_mark, obj_message, 1, desc, clip)
+        eco_layer["is_source"] = False
+        return "background", eco_layer
 
 
 def concat_ecoframes(eco_frame1: EcoFrame, eco_frame2: EcoFrame, impact_calculator=_calculate_impact) -> EcoFrame:
@@ -509,8 +350,8 @@ def concat_ecoframes(eco_frame1: EcoFrame, eco_frame2: EcoFrame, impact_calculat
     Returns:
         EcoFrame: Merged EcoFrame containing combined ecological data and geometries.
     """
-    frame1 = eco_frame1.eco_layers_gdf.copy()
-    frame2 = eco_frame2.eco_layers_gdf.copy()
+    frame1 = eco_frame1.eco_frame_gdf.copy()
+    frame2 = eco_frame2.eco_frame_gdf.copy()
 
     if frame1.crs != frame2.crs:
         frame2 = frame2.to_crs(frame1.crs)

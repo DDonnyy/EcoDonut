@@ -22,7 +22,7 @@ class LayerOptions:
     # second value stands for union buffer, it actually will do geometry.buffer(val).unary_union.buffer(-val)
     geom_union_unionbuff: Tuple[bool, int] = (False, 0)
 
-    simplify: int = 5
+    simplify: int = 10
     merge_radius: int | None = None  # if not None will merge objects in given radius
 
 
@@ -42,6 +42,7 @@ default_layers_options: Dict[str, LayerOptions] = {
         fading=("dangerous_level", _industrial_danglvl_to_fading),
         russian_name="Промышленный объект",
         merge_radius=10,
+        simplify=5,
     ),
     "gas_station": LayerOptions(
         initial_impact=-4,
@@ -49,6 +50,7 @@ default_layers_options: Dict[str, LayerOptions] = {
         russian_name="АЗС",
         geom_func=lambda x: x.buffer(50),
         merge_radius=10,
+        simplify=5,
     ),
     "landfill": LayerOptions(
         initial_impact=-3,
@@ -63,6 +65,7 @@ default_layers_options: Dict[str, LayerOptions] = {
         russian_name="Дорога регионального назначения",
         geom_func=lambda x: x.buffer(20),
         geom_union_unionbuff=(True, 0),
+        simplify=15,
     ),
     "federal_roads": LayerOptions(
         initial_impact=-4,
@@ -70,6 +73,7 @@ default_layers_options: Dict[str, LayerOptions] = {
         russian_name="Дорога федерального назначения",
         geom_func=lambda x: x.buffer(30),
         geom_union_unionbuff=(True, 0),
+        simplify=10,
     ),
     "railway": LayerOptions(
         initial_impact=-3,

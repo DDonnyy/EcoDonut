@@ -22,14 +22,14 @@ def calc_layer_count(gdf, minv=2, maxv=10, overall_min=None, overall_max=None) -
     return np.round(norm_impacts).astype(int)
 
 
-def combine_geometry(distributed, impact_calculator,**kwargs) -> gpd.GeoDataFrame:
+def combine_geometry(distributed, impact_calculator, **kwargs) -> gpd.GeoDataFrame:
     polygons = polygonize(distributed.geometry.apply(polygons_to_linestring).unary_union)
     enclosures = gpd.GeoSeries(list(polygons), crs=distributed.crs)
     enclosures_points = gpd.GeoDataFrame(geometry=enclosures.representative_point(), crs=enclosures.crs)
 
     joined = gpd.sjoin(enclosures_points, distributed, how="inner", predicate="within").reset_index()
-    joined = joined.groupby("index")["layer_impact"].agg(layer_impact = tuple)
-    joined["layer_impact"] = joined["layer_impact"].apply(impact_calculator,**kwargs)
+    joined = joined.groupby("index").agg({"layer_impact": tuple, "is_source": any})
+    joined["layer_impact"] = joined["layer_impact"].apply(impact_calculator, **kwargs)
     joined["layer_impact"] = joined["layer_impact"].astype(float).apply(round, ndigits=1)
     joined["geometry"] = enclosures
     joined = gpd.GeoDataFrame(joined, geometry="geometry", crs=distributed.crs)
@@ -61,14 +61,14 @@ def create_buffers(loc: pd.Series, resolution, positive_func, negative_func) -> 
     initial_impact = loc.initial_impact
 
     # Calculating the impact at each level
-    each_lvl_impact = {0:initial_impact}
+    each_lvl_impact = {0: initial_impact}
 
     if initial_impact > 0:
         for i in range(1, layers_count):
-            each_lvl_impact[i] = round(positive_func(layers_count, i) * initial_impact,1)
+            each_lvl_impact[i] = round(positive_func(layers_count, i) * initial_impact, 1)
     else:
         for i in range(1, layers_count):
-            each_lvl_impact[i] = round(negative_func(layers_count, i) * initial_impact,1)
+            each_lvl_impact[i] = round(negative_func(layers_count, i) * initial_impact, 1)
 
     initial_geom = loc.geometry
     geometries = [initial_geom]
@@ -80,7 +80,15 @@ def create_buffers(loc: pd.Series, resolution, positive_func, negative_func) -> 
         geometries.append(to_cut_temp.difference(to_cut))
         to_cut = to_cut_temp
 
-    return gpd.GeoDataFrame(each_lvl_impact.values(), columns=['layer_impact'], geometry=geometries)
+    # Create is_source column
+    is_source = [True] + [False] * (len(geometries) - 1)
+
+    # Create GeoDataFrame with all columns
+    gdf = gpd.GeoDataFrame(
+        {"layer_impact": each_lvl_impact.values(), "is_source": is_source, "geometry": geometries}, geometry="geometry"
+    )
+
+    return gdf
 
 
 def merge_objs_by_buffer(gdf: gpd.GeoDataFrame, buffer: int) -> gpd.GeoDataFrame:
@@ -115,9 +123,9 @@ def merge_objs_by_buffer(gdf: gpd.GeoDataFrame, buffer: int) -> gpd.GeoDataFrame
     representative_points = gdf.copy()
     representative_points.geometry = representative_points.geometry.representative_point()
     joined = gpd.sjoin(representative_points, buffered, how="inner", predicate="within")
-    joined.geometry = gdf.geometry
+    joined["geometry"] = gdf.geometry
     joined = joined.groupby("index_right").agg({x: unique_list for x in gdf.columns})
-    joined.geometry = joined.geometry.apply(lambda x: gpd.GeoSeries(x).union_all())
+    joined["geometry"] = joined["geometry"].apply(lambda x: gpd.GeoSeries(x).union_all())
     joined = gpd.GeoDataFrame(joined, geometry="geometry", crs=crs).reset_index(drop=True)
     return joined
 
