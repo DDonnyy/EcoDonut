@@ -7,7 +7,9 @@
 [Описание работы библиотеки](https://github.com/DDonnyy/EcoDonut/wiki/Описание-алгоритма-работы-библиотеки-Ecodonut-(RUS))
 
 ### Результат работы библиотеки на примере Ленинградской области
-![image](https://github.com/DDonnyy/EcoDonut/assets/63115678/7c005ccd-74b8-4756-86f4-84f556f19215)
+![image_2025-03-27_20-58-27](https://github.com/user-attachments/assets/c618124c-ac79-480e-805f-7468d886fb6d)
+![image_2025-03-27_20-58-28](https://github.com/user-attachments/assets/d8e1375c-8641-4658-a469-36ca022bcdf0)
+
 
 #### Базовые [примеры](./example) работы с библиотекой 
 
