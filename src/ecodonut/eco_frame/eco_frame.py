@@ -6,6 +6,7 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 from loguru import logger
+from shapely import box
 from shapely.ops import unary_union
 from tqdm.contrib.concurrent import thread_map
 
@@ -47,8 +48,10 @@ class EcoFrame:
     ecological data with customizable settings for analysis.
 
     Attributes:
-        eco_frame_gdf: GeoDataFrame containing ecological influence layers (positive/negative impact zones)
-        eco_influencers_gdf: GeoDataFrame containing geometries of negative influence sources and their buffers
+        eco_frame: GeoDataFrame containing ecological influence layers (positive/negative impact zones)
+        eco_influencers_sources: GeoDataFrame containing geometries of influence sources
+        eco_influencers_buffers: GeoDataFrame containing geometries of influence buffers
+        eco_influencers_backgrounds: GeoDataFrame containing geometries of influence backgrounds such as forest
         negative_types: Dictionary defining the types of negative ecological influences in the eco-frame
         positive_types: Dictionary defining the types of positive ecological influences in the eco-frame
         min_donut_count_radius: Tuple containing (minimum number of influence zones, radius) for donut segmentation
@@ -56,8 +59,10 @@ class EcoFrame:
         local_crs: The coordinate reference system used for spatial operations
     """
 
-    eco_frame_gdf: gpd.GeoDataFrame
-    eco_influencers_gdf: gpd.GeoDataFrame
+    eco_frame: gpd.GeoDataFrame
+    eco_influencers_sources: gpd.GeoDataFrame
+    eco_influencers_buffers: gpd.GeoDataFrame
+    eco_influencers_backgrounds: gpd.GeoDataFrame
     negative_types: dict[str, str]
     positive_types: dict[str, str]
     min_donut_count_radius: tuple[int, float]
@@ -135,7 +140,8 @@ class EcoFrameCalculator:
         """
         max_donut_count_radius = None
         min_donut_count_radius = None
-        eco_influencers_gdf = gpd.GeoDataFrame()
+        eco_influencers_sources = gpd.GeoDataFrame()
+        eco_influencers_gdf_buffered = gpd.GeoDataFrame()
         layers_to_donut = []
         backgrounds = []
         positive_layers = {}
@@ -190,16 +196,28 @@ class EcoFrameCalculator:
 
             min_donut_count_radius = min_layer_count, min_layer_rad
             max_donut_count_radius = max_layer_count, max_layer_rad
-            eco_influencers_gdf = _generate_eco_influencers(layers_to_donut)
+            eco_influencers_sources = layers_to_donut.copy()
+            eco_influencers_gdf_buffered = _generate_buffered_eco_influencers(layers_to_donut)
+
             logger.debug("Distributing levels...")
             layers_to_donut = layers_to_donut.dissolve(
                 by=["type", "initial_impact", "total_impact_radius"], aggfunc={"layers_count": "max"}
             ).reset_index()
-            donuted_layers = self._distribute_levels(layers_to_donut)
+            donuted_layers = _distribute_levels(
+                layers_to_donut, self.positive_fading_func, self.negative_fading_func, self.local_crs
+            )
             del layers_to_donut
         else:
             donuted_layers = gpd.GeoDataFrame()
-        donuted_layers = pd.concat([donuted_layers] + backgrounds, ignore_index=True)
+
+        if len(backgrounds) > 0:
+            backgrounds = gpd.GeoDataFrame(
+                pd.concat(backgrounds, ignore_index=True), geometry="geometry", crs=self.local_crs
+            )
+        else:
+            backgrounds = gpd.GeoDataFrame()
+
+        donuted_layers = pd.concat([donuted_layers, backgrounds], ignore_index=True)
         min_impact = donuted_layers["layer_impact"].min()
         max_impact = donuted_layers["layer_impact"].max()
         logger.debug(f"Max impact: {max_impact}, Min impact: {min_impact}")
@@ -216,8 +234,10 @@ class EcoFrameCalculator:
             eco_frame = eco_frame[eco_frame.is_valid]
 
         eco_frame = EcoFrame(
-            eco_frame_gdf=eco_frame,
-            eco_influencers_gdf=eco_influencers_gdf,
+            eco_frame=eco_frame,
+            eco_influencers_sources=eco_influencers_sources,
+            eco_influencers_buffers=eco_influencers_gdf_buffered,
+            eco_influencers_backgrounds=backgrounds,
             min_donut_count_radius=min_donut_count_radius,
             max_donut_count_radius=max_donut_count_radius,
             positive_types=positive_layers,
@@ -226,31 +246,29 @@ class EcoFrameCalculator:
         )
         return eco_frame
 
-    def _distribute_levels(self, data: gpd.GeoDataFrame, resolution=8) -> gpd.GeoDataFrame:
-        distributed = data.copy().apply(
-            create_buffers,
-            resolution=resolution,
-            positive_func=self.positive_fading_func,
-            negative_func=self.negative_fading_func,
-            axis=1,
-        )
-        return gpd.GeoDataFrame(
-            pd.concat(distributed.tolist(), ignore_index=True), geometry="geometry", crs=self.local_crs
-        )
 
-
-def _generate_eco_influencers(eco_layers):
-    eco_influencers_gdf = eco_layers.copy()
-    eco_influencers_gdf_buffered = eco_influencers_gdf.buffer(
-        np.abs(eco_influencers_gdf["total_impact_radius"]), resolution=4
+def _distribute_levels(
+    data: gpd.GeoDataFrame, positive_fading_func, negative_fading_func, local_crs, resolution=8
+) -> gpd.GeoDataFrame:
+    distributed = data.copy().apply(
+        create_buffers,
+        resolution=resolution,
+        positive_func=positive_fading_func,
+        negative_func=negative_fading_func,
+        axis=1,
     )
-    eco_influencers_gdf_buffered = eco_influencers_gdf_buffered.difference(eco_influencers_gdf.geometry, align=True)
+    return gpd.GeoDataFrame(pd.concat(distributed.tolist(), ignore_index=True), geometry="geometry", crs=local_crs)
+
+
+def _generate_buffered_eco_influencers(eco_layers: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+    """returns eco_influencers_sources and eco_influencers_buffers in tuple with same indexing"""
+
+    eco_influencers_gdf_buffered = eco_layers.buffer(np.abs(eco_layers["total_impact_radius"]), resolution=4)
+    eco_influencers_gdf_buffered = eco_influencers_gdf_buffered.difference(eco_layers.geometry, align=True)
     eco_influencers_gdf_buffered = gpd.GeoDataFrame(
-        geometry=eco_influencers_gdf_buffered, index=eco_influencers_gdf_buffered.index, crs=eco_influencers_gdf.crs
+        geometry=eco_influencers_gdf_buffered, index=eco_influencers_gdf_buffered.index, crs=eco_layers.crs
     )
-    eco_influencers_gdf["is_source"] = True
-    eco_influencers_gdf_buffered["is_source"] = False
-    return pd.concat([eco_influencers_gdf, eco_influencers_gdf_buffered])
+    return eco_influencers_gdf_buffered
 
 
 def _process_layer(layer_item):
@@ -338,23 +356,30 @@ def _process_layer(layer_item):
         return "background", eco_layer
 
 
-def concat_ecoframes(eco_frame1: EcoFrame, eco_frame2: EcoFrame, impact_calculator=_calculate_impact) -> EcoFrame:
+def merge_ecoframes(
+    eco_frame1: EcoFrame,
+    eco_frame2: EcoFrame,
+    zone: gpd.GeoDataFrame | None = None,
+    positive_fading_func: Callable[[int, int], float] = _positive_fading,
+    negative_fading_func: Callable[[int, int], float] = _negative_fading,
+    impact_calculator: Callable[[tuple[float, ...]], float] = _calculate_impact,
+) -> EcoFrame:
     """
-    Merges two eco-frames into a single EcoFrame with combined geometries and impacts.
+    Merges two eco-frames into a single EcoFrame building a new one.
 
     Args:
         eco_frame1 (EcoFrame): First eco-frame to merge.
         eco_frame2 (EcoFrame): Second eco-frame to merge.
+        zone(gpd.GeoDataFrame): Eco zone to merge.
         impact_calculator (Callable): Function to calculate impact during merging.
-
+        positive_fading_func (Callable, optional): Function to compute positive fading.
+        negative_fading_func (Callable, optional): Function to compute negative fading.
     Returns:
         EcoFrame: Merged EcoFrame containing combined ecological data and geometries.
-    """
-    frame1 = eco_frame1.eco_frame_gdf.copy()
-    frame2 = eco_frame2.eco_frame_gdf.copy()
 
-    if frame1.crs != frame2.crs:
-        frame2 = frame2.to_crs(frame1.crs)
+
+    """
+    local_crs = eco_frame1.local_crs
 
     negative_types = eco_frame1.negative_types.copy()
     negative_types.update(eco_frame2.negative_types)
@@ -362,23 +387,96 @@ def concat_ecoframes(eco_frame1: EcoFrame, eco_frame2: EcoFrame, impact_calculat
     positive_types = eco_frame1.positive_types.copy()
     positive_types.update(eco_frame2.positive_types)
 
-    ind_to_change = frame1.sjoin(frame2).index.unique()
+    eco_influencers_sources1 = eco_frame1.eco_influencers_sources.copy()
+    if len(eco_influencers_sources1) > 0:
+        eco_influencers_sources1 = eco_influencers_sources1.to_crs(local_crs)
 
-    new_frame = pd.concat([frame1.loc[ind_to_change], frame2], ignore_index=True)
-    new_frame = combine_geometry(new_frame, impact_calculator)
-    new_frame = pd.concat([frame1.drop(ind_to_change), new_frame], ignore_index=True)
-    new_frame = (
-        new_frame.groupby(["name", "layer_impact"])
-        .agg({"type": "first", "source": "first", "geometry": unary_union})
-        .reset_index()
+    eco_influencers_sources2 = eco_frame2.eco_influencers_sources.copy()
+    if len(eco_influencers_sources2) > 0:
+        eco_influencers_sources2 = eco_influencers_sources2.to_crs(local_crs)
+    if zone is not None:
+        zone = zone.to_crs(local_crs)
+        zone = zone[["geometry"]]
+
+        sources_indexes1 = zone.sjoin(eco_influencers_sources1, how="left")["index_right"]
+        effects_indexes1 = zone.sjoin(eco_frame1.eco_influencers_buffers, how="left")["index_right"]
+        effects1 = eco_influencers_sources1.loc[effects_indexes1]
+        sources1 = eco_influencers_sources1.loc[sources_indexes1]
+
+        sources_indexes2 = zone.sjoin(eco_influencers_sources2, how="left")["index_right"]
+        effects_indexes2 = zone.sjoin(eco_frame2.eco_influencers_buffers, how="left")["index_right"]
+        effects2 = eco_influencers_sources2.loc[effects_indexes2]
+        sources2 = eco_influencers_sources2.loc[sources_indexes2]
+
+        eco_influencers_sources = pd.concat(
+            [effects1, sources1, effects2, sources2], ignore_index=True
+        ).drop_duplicates()
+    else:
+        eco_influencers_sources = pd.concat(
+            [eco_influencers_sources1, eco_influencers_sources2], ignore_index=True
+        ).drop_duplicates()
+
+    eco_influencers_backgrounds1 = eco_frame1.eco_influencers_backgrounds.copy()
+    if len(eco_influencers_backgrounds1) > 0:
+        eco_influencers_backgrounds1 = eco_influencers_backgrounds1.to_crs(local_crs)
+    eco_influencers_backgrounds2 = eco_frame2.eco_influencers_backgrounds.copy()
+    if len(eco_influencers_backgrounds2) > 0:
+        eco_influencers_backgrounds2 = eco_influencers_backgrounds2.to_crs(local_crs)
+
+    eco_influencers_backgrounds = pd.concat(
+        [eco_influencers_backgrounds1, eco_influencers_backgrounds2], ignore_index=True
     )
-    new_frame = gpd.GeoDataFrame(new_frame, geometry="geometry", crs=eco_frame1.local_crs)
-    new_frame = EcoFrame(
-        eco_layers=new_frame,
-        min_donut_count_radius=eco_frame1.min_donut_count_radius,
-        max_donut_count_radius=eco_frame1.max_donut_count_radius,
-        positive_types=negative_types,
+
+    min_layer_count1, min_layer_rad1 = eco_frame1.min_donut_count_radius
+    max_layer_count1, max_layer_rad1 = eco_frame1.max_donut_count_radius
+    min_layer_count2, min_layer_rad2 = eco_frame1.min_donut_count_radius
+    max_layer_count2, max_layer_rad2 = eco_frame2.max_donut_count_radius
+
+    min_layer_count = min(min_layer_count1, min_layer_count2)
+    max_layer_count = max(max_layer_count1, max_layer_count2)
+    min_layer_rad = min(min_layer_rad1, min_layer_rad2)
+    max_layer_rad = max(max_layer_rad1, max_layer_rad2)
+
+    eco_influencers_sources = eco_influencers_sources.copy()
+
+    eco_influencers_sources["layers_count"] = calc_layer_count(
+        eco_influencers_sources, min_layer_count, max_layer_count, min_layer_rad, max_layer_rad
+    )
+    logger.debug("Distributing levels...")
+    layers_to_donut = eco_influencers_sources.dissolve(
+        by=["type", "initial_impact", "total_impact_radius"], aggfunc={"layers_count": "max"}
+    ).reset_index()
+    donuted_layers = _distribute_levels(layers_to_donut, positive_fading_func, negative_fading_func, local_crs)
+
+    if len(eco_influencers_backgrounds) > 0:
+        eco_influencers_backgrounds = gpd.GeoDataFrame(eco_influencers_backgrounds, geometry="geometry", crs=local_crs)
+        eco_influencers_backgrounds = eco_influencers_backgrounds.clip(
+            box(*donuted_layers.total_bounds), keep_geom_type=True
+        )
+    donuted_layers = pd.concat([donuted_layers, eco_influencers_backgrounds], ignore_index=True)
+    min_impact = donuted_layers["layer_impact"].min()
+    max_impact = donuted_layers["layer_impact"].max()
+    logger.debug(f"Max impact: {max_impact}, Min impact: {min_impact}")
+    logger.debug("Combining geometry...")
+    eco_frame = combine_geometry(donuted_layers, impact_calculator, max_value=max_impact, min_value=min_impact)
+    logger.debug("Grouping geometry...")
+    eco_frame = eco_frame.dissolve(by=["layer_impact", "is_source"]).reset_index()
+    if not eco_frame.geometry.is_valid.all():
+        eco_frame.geometry = eco_frame.geometry.buffer(0)
+        eco_frame = eco_frame[eco_frame.is_valid]
+
+    min_donut_count_radius = min_layer_count, min_layer_rad
+    max_donut_count_radius = max_layer_count, max_layer_rad
+    eco_influencers_gdf_buffered = _generate_buffered_eco_influencers(eco_influencers_sources)
+    eco_frame = EcoFrame(
+        eco_frame=eco_frame,
+        eco_influencers_sources=eco_influencers_sources,
+        eco_influencers_buffers=eco_influencers_gdf_buffered,
+        eco_influencers_backgrounds=eco_influencers_backgrounds,
+        min_donut_count_radius=min_donut_count_radius,
+        max_donut_count_radius=max_donut_count_radius,
+        positive_types=positive_types,
         negative_types=negative_types,
-        local_crs=eco_frame1.local_crs,
+        local_crs=local_crs,
     )
-    return new_frame
+    return eco_frame

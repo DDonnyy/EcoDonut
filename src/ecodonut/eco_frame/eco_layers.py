@@ -64,7 +64,6 @@ default_layers_options: Dict[str, LayerOptions] = {
         fading=0.1,
         russian_name="Дорога регионального назначения",
         geom_func=lambda x: x.buffer(20),
-        geom_union_unionbuff=(True, 0),
         simplify=15,
     ),
     "federal_roads": LayerOptions(
@@ -72,7 +71,6 @@ default_layers_options: Dict[str, LayerOptions] = {
         fading=0.2,
         russian_name="Дорога федерального назначения",
         geom_func=lambda x: x.buffer(30),
-        geom_union_unionbuff=(True, 0),
         simplify=10,
     ),
     "railway": LayerOptions(
@@ -80,7 +78,6 @@ default_layers_options: Dict[str, LayerOptions] = {
         fading=0.15,
         russian_name="Железнодорожные пути",
         geom_func=lambda x: x.buffer(30),
-        geom_union_unionbuff=(True, 0),
     ),
     "nature_reserve": LayerOptions(
         initial_impact=4,
@@ -93,7 +90,6 @@ default_layers_options: Dict[str, LayerOptions] = {
         initial_impact=3,
         fading=0.1,
         russian_name="Водный объект",
-        geom_union_unionbuff=(True, 50),
     ),
     "woods": LayerOptions(
         initial_impact=3,

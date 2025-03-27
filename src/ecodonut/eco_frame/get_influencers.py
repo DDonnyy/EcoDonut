@@ -20,7 +20,6 @@ class Influencers:
 
         result = [f"\n=== {title} ==="]
 
-        # Если словарь содержит вложенные данные по ID объектов
         if any(isinstance(k, int) for k in objects_dict.keys()):
             for _, obj_data in objects_dict.items():
                 if not isinstance(obj_data, dict):
@@ -67,9 +66,9 @@ def get_influencers_in_point(eco_frame: EcoFrame, point: gpd.GeoDataFrame, aroun
     point = point.copy()
     point.to_crs(eco_frame.local_crs, inplace=True)
     point.geometry = point.geometry.buffer(around_buffer)
-    objects_in_point = point.sjoin(eco_frame.eco_influencers_gdf, how="left")
-    sources = objects_in_point[objects_in_point["is_source"]]
-    effects_indexes = objects_in_point[~objects_in_point["is_source"]]["index_right"]
+
+    sources_in_point = point.sjoin(eco_frame.eco_influencers_sources, how="left")
+    effects_indexes = point.sjoin(eco_frame.eco_influencers_buffers, how="left")['index_right']
 
     positive_sources_dict = None
     negative_sources_dict = None
@@ -79,35 +78,34 @@ def get_influencers_in_point(eco_frame: EcoFrame, point: gpd.GeoDataFrame, aroun
     negative_objects_map = eco_frame.negative_types
     columns_to_save = ["name", "type", "total_impact_radius"]
 
-    if len(sources) > 0:
-        positive_sources = sources[sources["initial_impact"] > 0].copy()
+    if len(sources_in_point) > 0:
+        positive_sources = sources_in_point[sources_in_point["initial_impact"] > 0].copy()
         if len(positive_sources) > 0:
             positive_sources["name"] = positive_sources.apply(format_name, axis=1)
             positive_sources["type"] = positive_sources["type"].map(positive_objects_map)
-            positive_sources_dict = positive_sources[columns_to_save].to_dict(orient="index")
+            positive_sources_dict = positive_sources[columns_to_save].drop_duplicates().to_dict(orient="index")
 
-        negative_sources = sources[sources["initial_impact"] < 0].copy()
+        negative_sources = sources_in_point[sources_in_point["initial_impact"] < 0].copy()
         if len(negative_sources) > 0:
             negative_sources["name"] = negative_sources.apply(format_name, axis=1)
             negative_sources["type"] = negative_sources["type"].map(negative_objects_map)
             negative_sources["total_impact_radius"] = np.abs(negative_sources["total_impact_radius"])
-            negative_sources_dict = negative_sources[columns_to_save].to_dict(orient="index")
+            negative_sources_dict = negative_sources[columns_to_save].drop_duplicates().to_dict(orient="index")
 
     if len(effects_indexes) > 0:
-        effects = eco_frame.eco_influencers_gdf.loc[effects_indexes]
-        effects = effects[effects["is_source"]]
+        effects = eco_frame.eco_influencers_sources.loc[effects_indexes]
 
         positive_effects = effects[effects["initial_impact"] > 0].copy()
         if len(positive_effects) > 0:
             positive_effects["name"] = positive_effects.apply(format_name, axis=1)
             positive_effects["type"] = positive_effects["type"].map(positive_objects_map)
-            positive_effects_dict = positive_effects[columns_to_save].to_dict(orient="index")
+            positive_effects_dict = positive_effects[columns_to_save].drop_duplicates().to_dict(orient="index")
 
         negative_effects = effects[effects["initial_impact"] < 0].copy()
         if len(negative_effects) > 0:
             negative_effects["name"] = negative_effects.apply(format_name, axis=1)
             negative_effects["type"] = negative_effects["type"].map(negative_objects_map)
             negative_effects["total_impact_radius"] = np.abs(negative_effects["total_impact_radius"])
-            negative_effects_dict = negative_effects[columns_to_save].to_dict(orient="index")
+            negative_effects_dict = negative_effects[columns_to_save].drop_duplicates().to_dict(orient="index")
 
     return Influencers(positive_sources_dict, negative_sources_dict, positive_effects_dict, negative_effects_dict)
