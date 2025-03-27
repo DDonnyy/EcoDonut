@@ -22,7 +22,7 @@ class LayerOptions:
     # second value stands for union buffer, it actually will do geometry.buffer(val).unary_union.buffer(-val)
     geom_union_unionbuff: Tuple[bool, int] = (False, 0)
 
-    simplify: int = 20
+    simplify: int = 10
     merge_radius: int | None = None  # if not None will merge objects in given radius
 
 
@@ -41,42 +41,43 @@ default_layers_options: Dict[str, LayerOptions] = {
         initial_impact=("dangerous_level", _industrial_danglvl_to_init),
         fading=("dangerous_level", _industrial_danglvl_to_fading),
         russian_name="Промышленный объект",
-        merge_radius=250,
+        merge_radius=10,
+        simplify=5,
     ),
     "gas_station": LayerOptions(
         initial_impact=-4,
         fading=0.15,
         russian_name="АЗС",
         geom_func=lambda x: x.buffer(50),
-        merge_radius=50,
+        merge_radius=10,
+        simplify=5,
     ),
     "landfill": LayerOptions(
         initial_impact=-3,
         fading=0.4,
         russian_name="Свалка",
         area_normalization=lambda x: min_max_normalization(np.sqrt(x), 1, 5, math.sqrt(1000), math.sqrt(500000)),
-        merge_radius=100,
+        merge_radius=50,
     ),
     "regional_roads": LayerOptions(
         initial_impact=-2,
         fading=0.1,
         russian_name="Дорога регионального назначения",
         geom_func=lambda x: x.buffer(20),
-        geom_union_unionbuff=(True, 0),
+        simplify=15,
     ),
     "federal_roads": LayerOptions(
         initial_impact=-4,
         fading=0.2,
         russian_name="Дорога федерального назначения",
         geom_func=lambda x: x.buffer(30),
-        geom_union_unionbuff=(True, 0),
+        simplify=10,
     ),
     "railway": LayerOptions(
         initial_impact=-3,
         fading=0.15,
         russian_name="Железнодорожные пути",
         geom_func=lambda x: x.buffer(30),
-        geom_union_unionbuff=(True, 0),
     ),
     "nature_reserve": LayerOptions(
         initial_impact=4,
@@ -89,14 +90,13 @@ default_layers_options: Dict[str, LayerOptions] = {
         initial_impact=3,
         fading=0.1,
         russian_name="Водный объект",
-        geom_union_unionbuff=(True, 50),
     ),
     "woods": LayerOptions(
         initial_impact=3,
         fading=0.15,
         russian_name="Зелёная зона",
         make_donuts=False,
-        simplify=50,
-        geom_union_unionbuff=(True, 500),
+        simplify=20,
+        geom_union_unionbuff=(True, 250),
     ),
 }
