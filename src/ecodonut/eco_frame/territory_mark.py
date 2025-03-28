@@ -40,7 +40,7 @@ def mark_territory(eco_frame: EcoFrame, zone: gpd.GeoDataFrame) -> TerritoryMark
         TerritoryMark: Calculated territory mark object containing impact assessment.
     """
     zone = zone.copy()
-    zone = zone[['geometry']]
+    zone = zone[["geometry"]]
     zone.to_crs(eco_frame.local_crs, inplace=True)
     clipped_eco_frame = eco_frame.eco_frame.clip(zone, keep_geom_type=True)
 
@@ -55,7 +55,7 @@ def mark_territory(eco_frame: EcoFrame, zone: gpd.GeoDataFrame) -> TerritoryMark
     abs_mark = round(sum(clipped_eco_frame["layer_impact"] * clipped_eco_frame["impact_percent"]), 2)
 
     sources_in_zone = zone.sjoin(eco_frame.eco_influencers_sources, how="left")
-    effects_in_zone_indexes = zone.sjoin(eco_frame.eco_influencers_buffers, how="left")['index_right']
+    effects_in_zone_indexes = zone.sjoin(eco_frame.eco_influencers_buffers, how="left")["index_right"]
 
     negative_types = list(eco_frame.negative_types.keys())
 
@@ -65,8 +65,8 @@ def mark_territory(eco_frame: EcoFrame, zone: gpd.GeoDataFrame) -> TerritoryMark
     negative_effectors = negative_effectors[negative_effectors["type"].isin(negative_types)]
     negative_effectors = negative_effectors[~negative_effectors["name"].isin(negative_sources["name"])]
 
-    negative_sources = negative_sources[['name','type']].drop_duplicates()
-    negative_effectors = negative_effectors[['name','type']].drop_duplicates()
+    negative_sources = negative_sources[["name", "type"]].drop_duplicates()
+    negative_effectors = negative_effectors[["name", "type"]].drop_duplicates()
     if len(negative_sources) > 0:
         obj_message = (
             f"На проектной территории находятся {len(negative_sources)} источник(а/ов) негативного воздействия:"

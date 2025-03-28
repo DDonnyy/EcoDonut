@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 from shapely import LineString, MultiLineString, MultiPolygon, Polygon
 from shapely.ops import polygonize
+from loguru import logger
 
 
 def min_max_normalization(data, new_min=0, new_max=1, old_min=None, old_max=None):
@@ -23,17 +24,22 @@ def calc_layer_count(gdf, minv=2, maxv=10, overall_min=None, overall_max=None) -
 
 
 def combine_geometry(distributed, impact_calculator, **kwargs) -> gpd.GeoDataFrame:
-    polygons = polygonize(distributed.geometry.apply(polygons_to_linestring).unary_union)
+    logger.debug("Building lines")
+    poly_linestrings = distributed.geometry.apply(polygons_to_linestring)
+    logger.debug("Creation union")
+    union = poly_linestrings.union_all()
+    logger.debug("Polygonizing")
+    polygons = polygonize(union)
+    logger.debug("Polygonize done")
     enclosures = gpd.GeoSeries(list(polygons), crs=distributed.crs)
     enclosures_points = gpd.GeoDataFrame(geometry=enclosures.representative_point(), crs=enclosures.crs)
-
     joined = gpd.sjoin(enclosures_points, distributed, how="inner", predicate="within").reset_index()
     joined = joined.groupby("index").agg({"layer_impact": tuple, "is_source": any})
     joined["layer_impact"] = joined["layer_impact"].apply(impact_calculator, **kwargs)
     joined["layer_impact"] = joined["layer_impact"].astype(float).apply(round, ndigits=1)
     joined["geometry"] = enclosures
     joined = gpd.GeoDataFrame(joined, geometry="geometry", crs=distributed.crs)
-
+    logger.debug("Done combining")
     return joined
 
 
@@ -54,26 +60,16 @@ def polygons_to_linestring(geom: Polygon | MultiPolygon):
     return convert_multipolygon(geom)
 
 
-def create_buffers(loc: pd.Series, resolution, positive_func, negative_func) -> gpd.GeoDataFrame:
+def create_buffers(loc: pd.Series, resolution) -> gpd.GeoDataFrame:
     layers_count = loc.layers_count
-    # Calculation of each impact buffer
-    radius_per_lvl = abs(round(loc.total_impact_radius / (layers_count - 1), 0))
-    initial_impact = loc.initial_impact
-
-    # Calculating the impact at each level
-    each_lvl_impact = {0: initial_impact}
-
-    if initial_impact > 0:
-        for i in range(1, layers_count):
-            each_lvl_impact[i] = round(positive_func(layers_count, i) * initial_impact, 1)
-    else:
-        for i in range(1, layers_count):
-            each_lvl_impact[i] = round(negative_func(layers_count, i) * initial_impact, 1)
+    radius_per_lvl = loc.radius_per_lvl
+    each_lvl_impact = loc.each_lvl_impact  # Берем уже рассчитанные значения
 
     initial_geom = loc.geometry
     geometries = [initial_geom]
     to_cut = initial_geom
     radius = 0
+
     for i in range(1, layers_count):
         radius = radius + radius_per_lvl
         to_cut_temp = initial_geom.buffer(radius, resolution=resolution)

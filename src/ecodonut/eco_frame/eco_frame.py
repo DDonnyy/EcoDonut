@@ -1,4 +1,5 @@
 import math
+import os
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -7,8 +8,7 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 from shapely import box
-from shapely.ops import unary_union
-from tqdm.contrib.concurrent import thread_map
+from tqdm.contrib.concurrent import thread_map, process_map
 
 from ecodonut.eco_frame.eco_layers import LayerOptions, default_layers_options
 from ecodonut.utils import calc_layer_count, combine_geometry, create_buffers, merge_objs_by_buffer
@@ -111,7 +111,10 @@ class EcoFrameCalculator:
         if layer_options is None:
             layer_options = default_layers_options
         self.local_crs = territory.estimate_utm_crs()
-        self.territory = territory.to_crs(self.local_crs)
+        territory = territory.to_crs(self.local_crs)
+        simplify_meters = math.pow(territory.area.sum(), 1 / 4)
+        territory.geometry = territory.geometry.simplify(simplify_meters)
+        self.territory = territory
         if settings_from is not None:
             self.max_donut_count_radius = settings_from.max_donut_count_radius
             self.min_donut_count_radius = settings_from.min_donut_count_radius
@@ -224,6 +227,7 @@ class EcoFrameCalculator:
         logger.debug("Combining geometry...")
         eco_frame = combine_geometry(donuted_layers, self.impact_calculator, max_value=max_impact, min_value=min_impact)
         del donuted_layers
+        logger.debug("Clipping geometry...")
         eco_frame = eco_frame.clip(self.territory, keep_geom_type=True)
 
         logger.debug("Grouping geometry...")
@@ -248,16 +252,39 @@ class EcoFrameCalculator:
 
 
 def _distribute_levels(
-    data: gpd.GeoDataFrame, positive_fading_func, negative_fading_func, local_crs, resolution=8
+    data: gpd.GeoDataFrame, positive_fading_func, negative_fading_func, local_crs, resolution=8, workers: int = -1
 ) -> gpd.GeoDataFrame:
-    distributed = data.copy().apply(
-        create_buffers,
-        resolution=resolution,
-        positive_func=positive_fading_func,
-        negative_func=negative_fading_func,
+
+    if workers == -1:
+        workers = os.cpu_count() or 1
+
+    data["radius_per_lvl"] = np.abs(np.round(data["total_impact_radius"] / (data["layers_count"] - 1), 0))
+    data["each_lvl_impact"] = data.apply(
+        lambda row: {
+            0: row["initial_impact"],
+            **{
+                i: round(
+                    (positive_fading_func if row["initial_impact"] > 0 else negative_fading_func)(
+                        row["layers_count"], i
+                    )
+                    * row["initial_impact"],
+                    1,
+                )
+                for i in range(1, row["layers_count"])
+            },
+        },
         axis=1,
     )
-    return gpd.GeoDataFrame(pd.concat(distributed.tolist(), ignore_index=True), geometry="geometry", crs=local_crs)
+    # Параллельная обработка
+    distributed = process_map(
+        create_buffers,
+        [row for _, row in data.iterrows()],
+        [resolution] * len(data),
+        max_workers=workers,
+        # chunksize=chunksize,
+        desc="Creating buffers",
+    )
+    return gpd.GeoDataFrame(pd.concat(distributed, ignore_index=True), geometry="geometry", crs=local_crs)
 
 
 def _generate_buffered_eco_influencers(eco_layers: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
