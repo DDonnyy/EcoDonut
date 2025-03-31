@@ -54,8 +54,8 @@ def mark_territory(eco_frame: EcoFrame, zone: gpd.GeoDataFrame) -> TerritoryMark
     clipped_eco_frame["impact_percent"] = clipped_eco_frame.geometry.area / total_area
     abs_mark = round(sum(clipped_eco_frame["layer_impact"] * clipped_eco_frame["impact_percent"]), 2)
 
-    sources_in_zone = zone.sjoin(eco_frame.eco_influencers_sources, how="left")
-    effects_in_zone_indexes = zone.sjoin(eco_frame.eco_influencers_buffers, how="left")['index_right']
+    sources_in_zone = zone.sjoin(eco_frame.eco_influencers_sources, how="inner")
+    effects_in_zone_indexes = zone.sjoin(eco_frame.eco_influencers_buffers, how="inner")['index_right']
 
     negative_types = list(eco_frame.negative_types.keys())
 
