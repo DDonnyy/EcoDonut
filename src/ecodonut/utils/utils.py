@@ -119,7 +119,12 @@ def merge_objs_by_buffer(gdf: gpd.GeoDataFrame, buffer: int) -> gpd.GeoDataFrame
         return tuple(set(data))
 
     crs = gdf.crs
-    buffered = gpd.GeoDataFrame(geometry=[Polygon(x) for x in gdf.buffer(buffer).union_all().geoms], crs=crs)
+    geom_union = gdf.buffer(buffer).union_all()
+    if isinstance(geom_union, MultiPolygon):
+        geoms = [Polygon(x) for x in geom_union.geoms]
+    else:
+        geoms = [geom_union]
+    buffered = gpd.GeoDataFrame(geometry=geoms, crs=crs)
     representative_points = gdf.copy()
     representative_points.geometry = representative_points.geometry.representative_point()
     joined = gpd.sjoin(representative_points, buffered, how="inner", predicate="within")
