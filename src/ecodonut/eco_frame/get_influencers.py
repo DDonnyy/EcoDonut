@@ -67,8 +67,8 @@ def get_influencers_in_point(eco_frame: EcoFrame, point: gpd.GeoDataFrame, aroun
     point.to_crs(eco_frame.local_crs, inplace=True)
     point.geometry = point.geometry.buffer(around_buffer)
 
-    sources_in_point = point.sjoin(eco_frame.eco_influencers_sources, how="inner")
-    effects_indexes = point.sjoin(eco_frame.eco_influencers_buffers, how="inner")['index_right']
+    sources_in_point = point.sjoin(eco_frame.eco_influencers_sources, how="inner").reset_index(drop=True)
+    effects_indexes = point.sjoin(eco_frame.eco_influencers_buffers, how="inner")['index_right'].reset_index(drop=True)
 
     positive_sources_dict = None
     negative_sources_dict = None
