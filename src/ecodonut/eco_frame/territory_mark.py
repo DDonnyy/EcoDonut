@@ -65,8 +65,8 @@ def mark_territory(eco_frame: EcoFrame, zone: gpd.GeoDataFrame) -> TerritoryMark
     negative_effectors = negative_effectors[negative_effectors["type"].isin(negative_types)]
     negative_effectors = negative_effectors[~negative_effectors["name"].isin(negative_sources["name"])]
 
-    negative_sources = negative_sources[['name','type']].drop_duplicates()
-    negative_effectors = negative_effectors[['name','type']].drop_duplicates()
+    negative_sources = negative_sources[['name', 'type']].drop_duplicates()
+    negative_effectors = negative_effectors[['name', 'type']].drop_duplicates()
     if len(negative_sources) > 0:
         obj_message = (
             f"На проектной территории находятся {len(negative_sources)} источник(а/ов) негативного воздействия:"
@@ -101,57 +101,48 @@ def mark_territory(eco_frame: EcoFrame, zone: gpd.GeoDataFrame) -> TerritoryMark
 
     if (clipped_eco_frame["layer_impact"] > 0).all():
         desc = (
-            "Проектная территория имеет оценку 5 баллов по экологическому каркасу. Территория находится в зоне "
-            "влияния объектов, оказывающих только положительное влияние на окружающую среду."
+            "Проектная территория имеет оценку 5 баллов по экологическому каркасу. Территория находится в зоне влияния объектов, оказывающих только положительное влияние на окружающую среду."
         )
-        return TerritoryMark(abs_mark, obj_message, 5, desc, clipped_eco_frame)
+        return TerritoryMark(5, desc, abs_mark, obj_message, clipped_eco_frame)
 
     if (clipped_eco_frame["layer_impact"] < 0).all():
         desc = (
-            "Проектная территория имеет оценку 0 баллов по экологическому каркасу. Территория находится в зоне "
-            "влияния объектов, оказывающих только отрицательное влияние на окружающую среду."
+            "Проектная территория имеет оценку 0 баллов по экологическому каркасу. Территория находится в зоне влияния объектов, оказывающих только отрицательное влияние на окружающую среду."
         )
-        return TerritoryMark(abs_mark, obj_message, 0, desc, clipped_eco_frame)
+        return TerritoryMark(0, desc, abs_mark, obj_message, clipped_eco_frame)
 
     if abs_mark >= 2:
         desc = (
-            "Проектная территория имеет оценку 4 балла по экологическому каркасу. Территория находится "
-            "преимущественно в зоне влияния объектов, оказывающих положительное влияние на окружающую среду."
+            "Проектная территория имеет оценку 4 балла по экологическому каркасу. Территория находится преимущественно в зоне влияния объектов, оказывающих положительное влияние на окружающую среду."
         )
 
-        return TerritoryMark(abs_mark, obj_message, 4, desc, clipped_eco_frame)
+        return TerritoryMark(4, desc, abs_mark, obj_message, clipped_eco_frame)
 
     if abs_mark > 0:
         desc = (
-            "Проектная территория имеет оценку 3 балла по экологическому каркасу. Территория находится в зоне влияния "
-            "как положительных, так и отрицательных объектов, однако положительное влияние оказывает большее "
-            "воздействие чем отрицательное."
+            "Проектная территория имеет оценку 3 балла по экологическому каркасу. Территория находится в зоне влияния как положительных, так и отрицательных объектов, однако положительное влияние оказывает большее воздействие чем отрицательное."
         )
 
-        return TerritoryMark(abs_mark, obj_message, 3, desc, clipped_eco_frame)
+        return TerritoryMark(3, desc, abs_mark, obj_message, clipped_eco_frame)
 
     if abs_mark == 0:
         desc = (
-            "Проектная территория имеет оценку 2.5 балла по экологическому каркасу. Территория находится в зоне "
-            "влияния как положительных, так и отрицательных объектов, однако положительные и негативные влияния "
-            "компенсируют друг друга."
+            "Проектная территория имеет оценку 2.5 балла по экологическому каркасу. Территория находится в зоне влияния как положительных, так и отрицательных объектов, однако положительные и негативные влияния компенсируют друг друга."
         )
 
-        return TerritoryMark(abs_mark, obj_message, 2.5, desc, clipped_eco_frame)
+        return TerritoryMark(2.5, desc, abs_mark, obj_message, clipped_eco_frame)
 
     if abs_mark >= -4:
         desc = (
-            "Проектная территория имеет оценку 2 балла по экологическому каркасу. Территория находится в зоне влияния "
-            "как положительных, так и отрицательных объектов, однако отрицательное влияние оказывает большее "
-            "воздействие чем положительное."
+            "Проектная территория имеет оценку 2 балла по экологическому каркасу. Территория находится в зоне влияния как положительных, так и отрицательных объектов, однако отрицательное влияние оказывает большее воздействие чем положительное."
         )
 
-        return TerritoryMark(abs_mark, obj_message, 2, desc, clipped_eco_frame)
+        return TerritoryMark(2, desc, abs_mark, obj_message, clipped_eco_frame)
 
     if abs_mark < -4:
         desc = (
-            "Проектная территория имеет оценку 1 балл по экологическому каркасу. Территория находится "
-            "преимущественно в зоне влияния объектов, оказывающих негативное влияние на окружающую среду."
+            "Проектная территория имеет оценку 1 балл по экологическому каркасу. Территория находится преимущественно в зоне влияния объектов, оказывающих негативное влияние на окружающую среду."
         )
 
-        return TerritoryMark(abs_mark, obj_message, 1, desc, clipped_eco_frame)
+        return TerritoryMark(1, desc, abs_mark, obj_message, clipped_eco_frame)
+    return None
