@@ -85,7 +85,7 @@ class EcoFrameCalculator:
     max_donut_count_radius = None
     min_donut_count_radius = None
 
-    def __init__(
+    def  __init__(
             self,
             territory: gpd.GeoDataFrame,
             settings_from: EcoFrame = None,
