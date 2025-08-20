@@ -15,6 +15,8 @@ from skimage import measure
 from skimage.filters import gaussian
 import geopandas as gpd
 
+from loguru import logger
+
 
 @dataclass
 class GeoRef:
@@ -41,7 +43,7 @@ def _read_singleband_geotiff(
         scale = tags.get("ModelPixelScaleTag")
         tie = tags.get("ModelTiepointTag")
         if scale is None or tie is None:
-            raise ValueError("Нет GeoTIFF-тегов ModelPixelScaleTag/ModelTiepointTag")
+            raise ValueError("ModelPixelScaleTag/ModelTiepointTag not found in tiff tags")
 
         sx, sy = float(scale.value[0]), float(scale.value[1])
         i0, j0, _, X0, Y0, _ = tie.value[:6]
@@ -113,10 +115,11 @@ def _extend_linestring(line: LineString, distance: float = 0.001) -> LineString:
 
 def _lines_to_polygons(lines: list[LineString], bbox: tuple[float, float, float, float],
                        out_crs: CRS) -> gpd.GeoDataFrame:
-    frame = Polygon.from_bounds(*bbox).exterior
-    lines_w_bounds = lines + [LineString(frame.coords)]
+    logger.debug(f'Polygonizing {len(lines)} lines!')
+    frame = Polygon.from_bounds(*bbox)
+    lines_w_bounds = lines + [LineString(frame.exterior.coords)]
     polys = list(polygonize(node(MultiLineString(lines_w_bounds))))
-    return gpd.GeoDataFrame(geometry=polys, crs=out_crs)
+    return gpd.GeoDataFrame(geometry=polys, crs=out_crs).clip(frame, keep_geom_type=True)
 
 
 def _sample_at_rep_points(
@@ -147,7 +150,7 @@ def vectorize_heigh_map(
         in_path: str,
         band: int | None = None,
         step_value: float = 1.0,
-        mode: Literal["polygons", "iso_lines"] = "polygons",
+        mode: Literal["polygons", "iso_lines", "both"] = "polygons",
         smooth_sigma: float = 0.0,
         crs: int | CRS | str = 4326,
 
@@ -161,11 +164,14 @@ def vectorize_heigh_map(
     z_stop = math.ceil(zmax / step_value) * step_value
     levels = np.arange(z_start, z_stop + step_value, step_value)
 
-    arr_f = np.where(np.isnan(arr_work), -9999.0, arr_work)
+    arr_work = np.round(arr_work / step_value) * step_value
+    arr_work = np.where(np.isnan(arr_work), -9999.0, arr_work)
 
     lines, levs = [], []
+    logger.debug(f'Searching for contours in {len(levels)} levels!')
     for lev in levels:
-        for cnt in measure.find_contours(arr_f, level=lev):
+        contours = measure.find_contours(arr_work, level=lev)
+        for cnt in contours:
             rows, cols = cnt[:, 0], cnt[:, 1]
             X, Y = _rc_to_lonlat(cols, rows, geo_ref)
             if len(X) < 2:
@@ -173,23 +179,26 @@ def vectorize_heigh_map(
             line = LineString(zip(X, Y))
             if line.is_empty:
                 continue
-            if not line.is_closed and mode == "polygons":
+            if not line.is_closed and mode in ("polygons", "both"):
                 line = _extend_linestring(line, 0.001)
             lines.append(line)
             levs.append(float(lev))
 
-    if mode == "iso_lines":
-        gdf = gpd.GeoDataFrame({"height": levs}, geometry=lines, crs=crs)
-        return gdf
+    gdf_lines = None
+    if mode in ("iso_lines", "both"):
+        gdf_lines = gpd.GeoDataFrame({"height": levs}, geometry=lines, crs=crs)
 
-    # polygons
+    gdf_polys = None
+    if mode in ("polygons", "both"):
+        bbox_poly = (geo_ref.x_min, geo_ref.y_min, geo_ref.x_max, geo_ref.y_max)
+        polys = _lines_to_polygons(lines, bbox_poly, crs)
+        polys = _sample_at_rep_points(polys, arr, geo_ref, "height")
+        polys["height"] = np.round(polys["height"] / step_value) * step_value
+        gdf_polys = polys
 
-    bbox_poly = (geo_ref.x_min, geo_ref.y_min, geo_ref.x_max, geo_ref.y_max)
-    polys = _lines_to_polygons(lines, bbox_poly, crs)
-
-    polys = _sample_at_rep_points(polys, arr, geo_ref, "height")
-    polys["height"] = np.round(polys["height"] / step_value) * step_value
-    return polys
+    if mode == "both":
+        return gdf_lines, gdf_polys
+    return gdf_lines if mode == "iso_lines" else gdf_polys
 
 
 def vectorize_slope(
@@ -214,6 +223,7 @@ def vectorize_slope(
     stop = math.ceil(vmax / step_deg) * step_deg
     levels = np.arange(start, stop + step_deg, step_deg)
 
+    slope_deg = np.ceil(slope_deg / step_deg) * step_deg
     slope_f = np.where(np.isnan(slope_deg), vmin - 9999.0, slope_deg)
 
     lines = []
@@ -236,8 +246,6 @@ def vectorize_slope(
     polys["slope_deg"] = np.round(polys["slope_deg"] / step_deg) * step_deg
     return polys
 
-
-# ---------- 3) Векторизация экспозиции (aspect) полигонами ----------
 
 def vectorize_aspect(
         in_path: str,
@@ -271,7 +279,6 @@ def vectorize_aspect(
 
     for n_class in aspect_classes:
         contours = measure.find_contours(aspect_class, level=n_class)
-        print(n_class, len(contours))
         for cnt in contours:
             rows, cols = cnt[:, 0], cnt[:, 1]
             X, Y = _rc_to_lonlat(cols, rows, geo_ref)
