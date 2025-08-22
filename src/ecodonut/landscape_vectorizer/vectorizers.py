@@ -153,12 +153,49 @@ def vectorize_heigh_map(
         mode: Literal["polygons", "iso_lines", "both"] = "polygons",
         smooth_sigma: float = 0.0,
         crs: int | CRS | str = 4326,
-
 ) -> gpd.GeoDataFrame:
+    """
+    Vectorize a DEM into contour lines and/or height polygons.
+
+    Steps:
+        1. Read single-band GeoTIFF and build georeference.
+        2. Optionally smooth DEM with Gaussian filter.
+        3. Round values to `step_value` and enumerate contour levels.
+        4. Extract contour lines per level (skimage.measure.find_contours).
+        5. For polygon modes, extend open lines slightly and polygonize
+           within the raster frame.
+        6. Sample original DEM at representative points to populate the
+           "height" attribute of polygons.
+        7. Return GeoDataFrames in the requested mode.
+
+    Parameters:
+        in_path (str):
+            Path to a single-band GeoTIFF (or multi-band with `band` index).
+        band (int | None):
+            Band index to use if the TIFF has multiple bands. If None,
+            uses the first band.
+        step_value (float):
+            Elevation step (in DEM units) for contouring and classing.
+        mode (Literal["polygons","iso_lines","both"]):
+            What to return: only polygons, only isolines, or both.
+        smooth_sigma (float):
+            Sigma for Gaussian smoothing before vectorization. 0 disables smoothing.
+        crs (int | str | pyproj.CRS):
+            CRS assigned to the output GeoDataFrame(s) (default EPSG:4326).
+
+    Returns:
+        GeoDataFrame | tuple[GeoDataFrame, GeoDataFrame]:
+            If `mode="iso_lines"` → lines with column "height".
+            If `mode="polygons"` → polygons with column "height".
+            If `mode="both"` → (lines_gdf, polygons_gdf).
+
+    Raises:
+        ValueError:
+            If required GeoTIFF tags are missing.
+    """
     arr, geo_ref = _read_singleband_geotiff(in_path, band=band)
     arr_work = gaussian(arr, sigma=smooth_sigma, preserve_range=True) if smooth_sigma > 0 else arr
 
-    # уровни
     zmin, zmax = np.nanmin(arr_work), np.nanmax(arr_work)
     z_start = math.floor(zmin / step_value) * step_value
     z_stop = math.ceil(zmax / step_value) * step_value
@@ -204,10 +241,37 @@ def vectorize_heigh_map(
 def vectorize_slope(
         in_path: str,
         band: int | None = None,
-        step_deg: float = 1.0,  # шаг в градусах для векторизации
-        smooth_sigma: float = 1.0,  # сглаживание DEM перед градиентом
+        step_deg: float = 1.0,
+        smooth_sigma: float = 1.0,
         crs: int | CRS | str = 4326,
 ) -> gpd.GeoDataFrame:
+    """
+    Vectorize slope angle (degrees) into polygons with class step `step_deg`.
+
+    Steps:
+        1. Read DEM and determine UTM CRS by raster extent to measure
+           pixel size in meters.
+        2. Optionally smooth DEM, compute gradients (dz/dx, dz/dy) in meters.
+        3. Convert to slope degrees and quantize by `step_deg`.
+        4. Extract class boundaries as contours and polygonize.
+        5. Sample slope at representative points and write "slope_deg".
+
+    Parameters:
+        in_path (str):
+            Path to single-band DEM GeoTIFF.
+        band (int | None):
+            Band index for multi-band files, if applicable.
+        step_deg (float):
+            Slope class step (degrees).
+        smooth_sigma (float):
+            Sigma for Gaussian smoothing prior to gradients.
+        crs (int | str | pyproj.CRS):
+            Output CRS (default EPSG:4326).
+
+    Returns:
+        GeoDataFrame:
+            Polygons with attribute "slope_deg" (class center/step-rounded).
+    """
     arr, geo_ref = _read_singleband_geotiff(in_path, band=band)
 
     utm_crs = _utm_crs_by_extent(geo_ref)
@@ -250,11 +314,40 @@ def vectorize_slope(
 def vectorize_aspect(
         in_path: str,
         band: int | None = None,
-        degree_step: float = 90.0,  # размер сектора (напр. 90 -> N/E/S/W; 45 -> N/NE/...)
-        smooth_sigma: float = 0.0,  # сглаживание DEM перед градиентом
+        degree_step: float = 90.0,
+        smooth_sigma: float = 0.0,
         crs: int | CRS | str = 4326,
-        add_labels: bool = True,  # добавить текстовые ярлыки
+        add_labels: bool = True,
 ) -> gpd.GeoDataFrame:
+    """
+    Vectorize aspect (0–360°) into categorical polygons with bins of `degree_step`.
+
+    Steps:
+        1. Read DEM and compute gradients (UTM-based pixel sizes).
+        2. Compute aspect (arctan2), map to [0, 360), mask near-flat pixels.
+        3. Build bins of size `degree_step`, extract class boundaries,
+           polygonize within raster frame.
+        4. Sample continuous aspect degrees into "aspect_deg".
+        5. Optionally attach textual labels "aspect_label" (e.g., N, NE, ...).
+
+    Parameters:
+        in_path (str):
+            Path to single-band DEM GeoTIFF.
+        band (int | None):
+            Band index for multi-band files, if applicable.
+        degree_step (float):
+            Class width in degrees (e.g., 90 → N/E/S/W; 45 → N/NE/…).
+        smooth_sigma (float):
+            Sigma for optional Gaussian smoothing.
+        crs (int | str | pyproj.CRS):
+            Output CRS (default EPSG:4326).
+        add_labels (bool):
+            If True, add a human-readable "aspect_label" column.
+
+    Returns:
+        GeoDataFrame:
+            Polygons with "aspect_deg" and, if requested, "aspect_label".
+    """
     arr, geo_ref = _read_singleband_geotiff(in_path, band=band)
 
     utm_crs = _utm_crs_by_extent(geo_ref)

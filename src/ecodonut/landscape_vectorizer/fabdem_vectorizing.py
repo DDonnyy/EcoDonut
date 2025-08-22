@@ -117,6 +117,52 @@ def vectorize_fabdem_tiles(
         max_workers: int = 4,
         skip_existing: bool = True,
 ) -> None:
+    """
+        Batch vectorize FABDEM tiles and write Parquet layers to disk.
+
+        Workflow:
+            1. Collect target tiles:
+               • If `filter_gdf` is None → take all *.tif under `data_dir` (recursive).
+               • Else → spatial join `tiles_gdf` × `filter_gdf` and keep intersecting tiles.
+            2. Build processing tasks (one per tile) with deterministic output names:
+               {tile}_height_iso_lines_{height_step}m.parquet,
+               {tile}_height_polygons_{height_step}m.parquet,
+               {tile}_slope_deg_polygons_{slope_step_deg}deg.parquet,
+               {tile}_aspect_{aspect_step_deg}deg_polygons.parquet
+            3. Run parallel processing (ProcessPool), writing results and
+               appending an incremental CSV log.
+
+        Parameters:
+            data_dir (str | Path):
+                Root directory with extracted FABDEM GeoTIFF tiles.
+            out_dir (str | Path):
+                Folder to write Parquet outputs.
+            log_csv (str | Path):
+                CSV log file (created/appended).
+            tiles_gdf (GeoDataFrame | None):
+                FABDEM tiles index with at least columns ["file_name", "geometry"].
+                Required when `filter_gdf` is provided.
+            filter_gdf (GeoDataFrame | None):
+                Zone(s) of interest; when given, only intersecting tiles are processed.
+            height_step (float):
+                Elevation step (meters) for isolines/polygons.
+            slope_step_deg (float):
+                Slope class width in degrees for slope polygons.
+            smooth_sigma_slope (float):
+                Gaussian smoothing sigma for slope computation.
+            aspect_step_deg (float):
+                Aspect class width in degrees.
+            smooth_sigma_aspect (float):
+                Gaussian smoothing sigma for aspect computation.
+            max_workers (int):
+                Number of worker processes.
+            skip_existing (bool):
+                If True, do not recompute tiles whose outputs already exist.
+
+        Returns:
+            None:
+                Results are persisted to `out_dir`; progress and errors go to `log_csv`.
+        """
     data_dir = Path(data_dir)
     out_dir = Path(out_dir)
     log_csv = Path(log_csv)
