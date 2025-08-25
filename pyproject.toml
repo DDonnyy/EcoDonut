@@ -8,7 +8,7 @@ readme = "README.md"
 packages = [{ include = "ecodonut", from = "src" }]
 
 [tool.poetry.dependencies]
-python = ">=3.10,<3.13"
+python = ">=3.11,<3.13"
 geopandas = "^1.0.1"
 numpy = "^2.1.3"
 pandas = "^2.2.3"
@@ -17,6 +17,9 @@ dask = "^2025.3.0"
 networkx = "^3.3"
 loguru = "^0.7.2"
 scipy = "^1.15.2"
+tifffile = "^2025.6.11"
+scikit-image = "^0.25.2"
+pyarrow = "^21.0.0"
 
 [tool.poetry.group.dev.dependencies]
 matplotlib = "^3.8.4"
@@ -26,6 +29,7 @@ black = "^24.10.0"
 pylint = "^3.3.1"
 isort = "^5.13.2"
 jupyter = "^1.1.1"
+
 
 [build-system]
 requires = ["poetry-core"]
