@@ -1,22 +1,22 @@
 from pathlib import Path
 
-import pandas as pd
 import geopandas as gpd
-
-from .parallel import run_parallel, _write_log_row
-from .utils import find_tif_on_disk
+import pandas as pd
 from tqdm.auto import tqdm
+
+from .parallel import _write_log_row, run_parallel
+from .utils import find_tif_on_disk
 
 
 def _build_tasks(
-        needed_tiles: pd.DataFrame,
-        data_dir: Path,
-        out_dir: Path,
-        height_step: float,
-        slope_step_deg: float,
-        aspect_step_deg: float,
-        log_csv: Path,
-        skip_existing: bool = True,
+    needed_tiles: pd.DataFrame,
+    data_dir: Path,
+    out_dir: Path,
+    height_step: float,
+    slope_step_deg: float,
+    aspect_step_deg: float,
+    log_csv: Path,
+    skip_existing: bool = True,
 ) -> list[tuple[str, str, str]]:
     tasks: list[tuple[str, str, str]] = []
 
@@ -99,70 +99,65 @@ def _collect_tiles_by_filter(tiles_gdf, filter_gdf) -> pd.DataFrame:
 
 
 def vectorize_fabdem_tiles(
-        data_dir: str | Path,
-        out_dir: str | Path,
-        log_csv: str | Path,
-
-        tiles_gdf: gpd.GeoDataFrame | None = None,
-        filter_gdf: gpd.GeoDataFrame | None = None,
-
-        height_step: float = 5.0,
-
-        slope_step_deg: float = 5.0,
-        smooth_sigma_slope: float = 1.0,
-
-        aspect_step_deg: float = 90.0,
-        smooth_sigma_aspect: float = 1.0,
-
-        max_workers: int = 4,
-        skip_existing: bool = True,
+    data_dir: str | Path,
+    out_dir: str | Path,
+    log_csv: str | Path,
+    tiles_gdf: gpd.GeoDataFrame | None = None,
+    filter_gdf: gpd.GeoDataFrame | None = None,
+    height_step: float = 5.0,
+    slope_step_deg: float = 5.0,
+    smooth_sigma_slope: float = 1.0,
+    aspect_step_deg: float = 90.0,
+    smooth_sigma_aspect: float = 1.0,
+    max_workers: int = 4,
+    skip_existing: bool = True,
 ) -> None:
     """
-        Batch vectorize FABDEM tiles and write Parquet layers to disk.
+    Batch vectorize FABDEM tiles and write Parquet layers to disk.
 
-        Workflow:
-            1. Collect target tiles:
-               • If `filter_gdf` is None → take all *.tif under `data_dir` (recursive).
-               • Else → spatial join `tiles_gdf` × `filter_gdf` and keep intersecting tiles.
-            2. Build processing tasks (one per tile) with deterministic output names:
-               {tile}_height_iso_lines_{height_step}m.parquet,
-               {tile}_height_polygons_{height_step}m.parquet,
-               {tile}_slope_deg_polygons_{slope_step_deg}deg.parquet,
-               {tile}_aspect_{aspect_step_deg}deg_polygons.parquet
-            3. Run parallel processing (ProcessPool), writing results and
-               appending an incremental CSV log.
+    Workflow:
+        1. Collect target tiles:
+           • If `filter_gdf` is None → take all *.tif under `data_dir` (recursive).
+           • Else → spatial join `tiles_gdf` × `filter_gdf` and keep intersecting tiles.
+        2. Build processing tasks (one per tile) with deterministic output names:
+           {tile}_height_iso_lines_{height_step}m.parquet,
+           {tile}_height_polygons_{height_step}m.parquet,
+           {tile}_slope_deg_polygons_{slope_step_deg}deg.parquet,
+           {tile}_aspect_{aspect_step_deg}deg_polygons.parquet
+        3. Run parallel processing (ProcessPool), writing results and
+           appending an incremental CSV log.
 
-        Parameters:
-            data_dir (str | Path):
-                Root directory with extracted FABDEM GeoTIFF tiles.
-            out_dir (str | Path):
-                Folder to write Parquet outputs.
-            log_csv (str | Path):
-                CSV log file (created/appended).
-            tiles_gdf (GeoDataFrame | None):
-                FABDEM tiles index with at least columns ["file_name", "geometry"].
-                Required when `filter_gdf` is provided.
-            filter_gdf (GeoDataFrame | None):
-                Zone(s) of interest; when given, only intersecting tiles are processed.
-            height_step (float):
-                Elevation step (meters) for isolines/polygons.
-            slope_step_deg (float):
-                Slope class width in degrees for slope polygons.
-            smooth_sigma_slope (float):
-                Gaussian smoothing sigma for slope computation.
-            aspect_step_deg (float):
-                Aspect class width in degrees.
-            smooth_sigma_aspect (float):
-                Gaussian smoothing sigma for aspect computation.
-            max_workers (int):
-                Number of worker processes.
-            skip_existing (bool):
-                If True, do not recompute tiles whose outputs already exist.
+    Parameters:
+        data_dir (str | Path):
+            Root directory with extracted FABDEM GeoTIFF tiles.
+        out_dir (str | Path):
+            Folder to write Parquet outputs.
+        log_csv (str | Path):
+            CSV log file (created/appended).
+        tiles_gdf (GeoDataFrame | None):
+            FABDEM tiles index with at least columns ["file_name", "geometry"].
+            Required when `filter_gdf` is provided.
+        filter_gdf (GeoDataFrame | None):
+            Zone(s) of interest; when given, only intersecting tiles are processed.
+        height_step (float):
+            Elevation step (meters) for isolines/polygons.
+        slope_step_deg (float):
+            Slope class width in degrees for slope polygons.
+        smooth_sigma_slope (float):
+            Gaussian smoothing sigma for slope computation.
+        aspect_step_deg (float):
+            Aspect class width in degrees.
+        smooth_sigma_aspect (float):
+            Gaussian smoothing sigma for aspect computation.
+        max_workers (int):
+            Number of worker processes.
+        skip_existing (bool):
+            If True, do not recompute tiles whose outputs already exist.
 
-        Returns:
-            None:
-                Results are persisted to `out_dir`; progress and errors go to `log_csv`.
-        """
+    Returns:
+        None:
+            Results are persisted to `out_dir`; progress and errors go to `log_csv`.
+    """
     data_dir = Path(data_dir)
     out_dir = Path(out_dir)
     log_csv = Path(log_csv)

@@ -5,16 +5,17 @@ from typing import Any, Callable
 import geopandas as gpd
 import numpy as np
 import pandas as pd
-from ecodonut.eco_frame.eco_layers import LayerOptions, default_layers_options
-from ecodonut.utils import calc_layer_count, combine_geometry, create_buffers, merge_objs_by_buffer
 from loguru import logger
 from shapely import box
 from tqdm.contrib.concurrent import thread_map
 
+from ecodonut.eco_frame.eco_layers import LayerOptions, default_layers_options
+from ecodonut.utils import calc_layer_count, combine_geometry, create_buffers, merge_objs_by_buffer
+
 
 def _positive_fading(layers_count: int, i: int) -> float:
     """Calculate fading effect for positive layers."""
-    sigmoid_value = math.exp(-(i - 0.5) * ((0.7 * math.e ** 2) / layers_count))
+    sigmoid_value = math.exp(-(i - 0.5) * ((0.7 * math.e**2) / layers_count))
     return sigmoid_value
 
 
@@ -31,10 +32,10 @@ def _calculate_impact(impact_list: list, max_value, min_value) -> float:
     negative_list = sorted([abs(x) for x in impact_list if x < 0])
     total_positive = 0
     for imp in positive_list:
-        total_positive = min(np.sqrt(imp ** 2 + total_positive ** 2), abs(max_value))
+        total_positive = min(np.sqrt(imp**2 + total_positive**2), abs(max_value))
     total_negative = 0
     for imp in negative_list:
-        total_negative = min(np.sqrt(imp ** 2 + total_negative ** 2), abs(min_value))
+        total_negative = min(np.sqrt(imp**2 + total_negative**2), abs(min_value))
     return total_positive - total_negative
 
 
@@ -85,14 +86,14 @@ class EcoFrameCalculator:
     max_donut_count_radius = None
     min_donut_count_radius = None
 
-    def  __init__(
-            self,
-            territory: gpd.GeoDataFrame,
-            settings_from: EcoFrame = None,
-            layer_options: dict[str, LayerOptions] = None,
-            positive_fading_func: Callable[[int, int], float] = _positive_fading,
-            negative_fading_func: Callable[[int, int], float] = _negative_fading,
-            impact_calculator: Callable[[tuple[float, ...]], float] = _calculate_impact,
+    def __init__(
+        self,
+        territory: gpd.GeoDataFrame,
+        settings_from: EcoFrame = None,
+        layer_options: dict[str, LayerOptions] = None,
+        positive_fading_func: Callable[[int, int], float] = _positive_fading,
+        negative_fading_func: Callable[[int, int], float] = _negative_fading,
+        impact_calculator: Callable[[tuple[float, ...]], float] = _calculate_impact,
     ):
         """
         Initializes the EcoFrameCalculator with specified settings.
@@ -118,10 +119,10 @@ class EcoFrameCalculator:
         self.impact_calculator = impact_calculator
 
     def evaluate_ecoframe(
-            self,
-            eco_layers: dict[str, gpd.GeoDataFrame],
-            min_layer_count: int = 2,
-            max_layer_count: int = 10,
+        self,
+        eco_layers: dict[str, gpd.GeoDataFrame],
+        min_layer_count: int = 2,
+        max_layer_count: int = 10,
     ) -> EcoFrame:
         """
         Creates an EcoFrame from specified ecological layers.
@@ -150,7 +151,7 @@ class EcoFrameCalculator:
             if (eco_layer is not None and len(eco_layer) > 0)
         ]
         if len(iterables) == 0:
-            logger.warning('EcoFrame does not contain any layers.')
+            logger.warning("EcoFrame does not contain any layers.")
             return EcoFrame(
                 eco_frame=gpd.GeoDataFrame(),
                 eco_influencers_sources=eco_influencers_sources,
@@ -259,7 +260,7 @@ class EcoFrameCalculator:
 
 
 def _distribute_levels(
-        data: gpd.GeoDataFrame, positive_fading_func, negative_fading_func, local_crs, resolution=8
+    data: gpd.GeoDataFrame, positive_fading_func, negative_fading_func, local_crs, resolution=8
 ) -> gpd.GeoDataFrame:
     distributed = data.copy().apply(
         create_buffers,
@@ -368,12 +369,12 @@ def _process_layer(layer_item):
 
 
 def merge_ecoframes(
-        eco_frame1: EcoFrame,
-        eco_frame2: EcoFrame,
-        zone: gpd.GeoDataFrame | None = None,
-        positive_fading_func: Callable[[int, int], float] = _positive_fading,
-        negative_fading_func: Callable[[int, int], float] = _negative_fading,
-        impact_calculator: Callable[[tuple[float, ...]], float] = _calculate_impact,
+    eco_frame1: EcoFrame,
+    eco_frame2: EcoFrame,
+    zone: gpd.GeoDataFrame | None = None,
+    positive_fading_func: Callable[[int, int], float] = _positive_fading,
+    negative_fading_func: Callable[[int, int], float] = _negative_fading,
+    impact_calculator: Callable[[tuple[float, ...]], float] = _calculate_impact,
 ) -> EcoFrame:
     """
     Merges two eco-frames into a single EcoFrame building a new one.

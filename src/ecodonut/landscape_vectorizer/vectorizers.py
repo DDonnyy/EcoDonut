@@ -2,20 +2,18 @@ import math
 from dataclasses import dataclass
 from typing import Literal
 
+import geopandas as gpd
 import numpy as np
 import tifffile as tiff
+from loguru import logger
 from pyproj import CRS, Transformer
 from pyproj.aoi import AreaOfInterest
 from pyproj.database import query_utm_crs_info
-
+from shapely import MultiLineString, node
 from shapely.geometry import LineString, Polygon
 from shapely.ops import polygonize
-from shapely import MultiLineString, node
 from skimage import measure
 from skimage.filters import gaussian
-import geopandas as gpd
-
-from loguru import logger
 
 
 @dataclass
@@ -34,8 +32,8 @@ class GeoRef:
 
 
 def _read_singleband_geotiff(
-        in_path: str,
-        band: int | None = None,  # None -> первая полоса (если [H,W]); если [B,H,W] – укажи индекс
+    in_path: str,
+    band: int | None = None,  # None -> первая полоса (если [H,W]); если [B,H,W] – укажи индекс
 ) -> tuple[np.ndarray, GeoRef]:
     with tiff.TiffFile(in_path) as tif:
         page = tif.pages[0]
@@ -67,8 +65,16 @@ def _read_singleband_geotiff(
 
     arr = np.where(arr == nodata, np.nan, arr).astype(float)
     georef = GeoRef(
-        x_min=x_min, x_max=x_max, y_min=y_min, y_max=y_max,
-        sx=sx, sy=sy, i0=i0, j0=j0, width=width, height=height,
+        x_min=x_min,
+        x_max=x_max,
+        y_min=y_min,
+        y_max=y_max,
+        sx=sx,
+        sy=sy,
+        i0=i0,
+        j0=j0,
+        width=width,
+        height=height,
         crs=CRS.from_epsg(4326),
     )
     return arr, georef
@@ -98,13 +104,13 @@ def _rc_to_lonlat(cols: np.ndarray, rows: np.ndarray, georef: GeoRef) -> tuple[n
 def _extend_linestring(line: LineString, distance: float = 0.001) -> LineString:
     if len(line.coords) < 2:
         return line
-    x0, y0 = line.coords[0];
+    x0, y0 = line.coords[0]
     x1, y1 = line.coords[1]
     dx0, dy0 = x0 - x1, y0 - y1
     L0 = math.hypot(dx0, dy0) or 1.0
     new_start = (x0 + dx0 / L0 * distance, y0 + dy0 / L0 * distance)
 
-    xN1, yN1 = line.coords[-2];
+    xN1, yN1 = line.coords[-2]
     xN, yN = line.coords[-1]
     dx1, dy1 = xN - xN1, yN - yN1
     L1 = math.hypot(dx1, dy1) or 1.0
@@ -113,18 +119,17 @@ def _extend_linestring(line: LineString, distance: float = 0.001) -> LineString:
     return LineString([new_start, *list(line.coords[1:-1]), new_end])
 
 
-def _lines_to_polygons(lines: list[LineString], bbox: tuple[float, float, float, float],
-                       out_crs: CRS) -> gpd.GeoDataFrame:
-    logger.debug(f'Polygonizing {len(lines)} lines!')
+def _lines_to_polygons(
+    lines: list[LineString], bbox: tuple[float, float, float, float], out_crs: CRS
+) -> gpd.GeoDataFrame:
+    logger.debug(f"Polygonizing {len(lines)} lines!")
     frame = Polygon.from_bounds(*bbox)
     lines_w_bounds = lines + [LineString(frame.exterior.coords)]
     polys = list(polygonize(node(MultiLineString(lines_w_bounds))))
     return gpd.GeoDataFrame(geometry=polys, crs=out_crs).clip(frame, keep_geom_type=True)
 
 
-def _sample_at_rep_points(
-        gdf: gpd.GeoDataFrame, arr: np.ndarray, georef: GeoRef, value_name: str
-) -> gpd.GeoDataFrame:
+def _sample_at_rep_points(gdf: gpd.GeoDataFrame, arr: np.ndarray, georef: GeoRef, value_name: str) -> gpd.GeoDataFrame:
     rep = gdf.representative_point()
     cols = np.round((rep.x.values - georef.x_min) / georef.sx + georef.i0).astype(int)
     rows = np.round((georef.y_max - rep.y.values) / georef.sy + georef.j0).astype(int)
@@ -147,12 +152,12 @@ def _get_dxdy_m(G: GeoRef, to_utm: Transformer) -> tuple[float, float]:
 
 
 def vectorize_heigh_map(
-        in_path: str,
-        band: int | None = None,
-        step_value: float = 1.0,
-        mode: Literal["polygons", "iso_lines", "both"] = "polygons",
-        smooth_sigma: float = 0.0,
-        crs: int | CRS | str = 4326,
+    in_path: str,
+    band: int | None = None,
+    step_value: float = 1.0,
+    mode: Literal["polygons", "iso_lines", "both"] = "polygons",
+    smooth_sigma: float = 0.0,
+    crs: int | CRS | str = 4326,
 ) -> gpd.GeoDataFrame:
     """
     Vectorize a DEM into contour lines and/or height polygons.
@@ -205,7 +210,7 @@ def vectorize_heigh_map(
     arr_work = np.where(np.isnan(arr_work), -9999.0, arr_work)
 
     lines, levs = [], []
-    logger.debug(f'Searching for contours in {len(levels)} levels!')
+    logger.debug(f"Searching for contours in {len(levels)} levels!")
     for lev in levels:
         contours = measure.find_contours(arr_work, level=lev)
         for cnt in contours:
@@ -239,11 +244,11 @@ def vectorize_heigh_map(
 
 
 def vectorize_slope(
-        in_path: str,
-        band: int | None = None,
-        step_deg: float = 1.0,
-        smooth_sigma: float = 1.0,
-        crs: int | CRS | str = 4326,
+    in_path: str,
+    band: int | None = None,
+    step_deg: float = 1.0,
+    smooth_sigma: float = 1.0,
+    crs: int | CRS | str = 4326,
 ) -> gpd.GeoDataFrame:
     """
     Vectorize slope angle (degrees) into polygons with class step `step_deg`.
@@ -312,12 +317,12 @@ def vectorize_slope(
 
 
 def vectorize_aspect(
-        in_path: str,
-        band: int | None = None,
-        degree_step: float = 90.0,
-        smooth_sigma: float = 0.0,
-        crs: int | CRS | str = 4326,
-        add_labels: bool = True,
+    in_path: str,
+    band: int | None = None,
+    degree_step: float = 90.0,
+    smooth_sigma: float = 0.0,
+    crs: int | CRS | str = 4326,
+    add_labels: bool = True,
 ) -> gpd.GeoDataFrame:
     """
     Vectorize aspect (0–360°) into categorical polygons with bins of `degree_step`.
@@ -404,8 +409,24 @@ def vectorize_aspect(
             for k in range(n_classes):
                 mid = (bins[k] + bins[k + 1]) / 2.0 % 360.0
                 # округлим к 16-секторной розе для подписи
-                dirs = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW",
-                        "NNW"]
+                dirs = [
+                    "N",
+                    "NNE",
+                    "NE",
+                    "ENE",
+                    "E",
+                    "ESE",
+                    "SE",
+                    "SSE",
+                    "S",
+                    "SSW",
+                    "SW",
+                    "WSW",
+                    "W",
+                    "WNW",
+                    "NW",
+                    "NNW",
+                ]
                 idx = int(np.round((mid % 360.0) / 22.5)) % 16
                 labs.append(dirs[idx])
             return labs

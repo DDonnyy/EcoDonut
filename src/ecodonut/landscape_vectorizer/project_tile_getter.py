@@ -8,12 +8,12 @@ LayerName = Literal["height_iso", "height_poly", "slope", "aspect"]
 
 
 def _find_parquet_file(
-        vectors_dir: Path,
-        tile_name: str,
-        layer: LayerName,
-        height_step: float,
-        slope_step_deg: float | None,
-        aspect_step_deg: float | None,
+    vectors_dir: Path,
+    tile_name: str,
+    layer: LayerName,
+    height_step: float,
+    slope_step_deg: float | None,
+    aspect_step_deg: float | None,
 ) -> Path | None:
     match layer:
         case "height_iso":
@@ -50,13 +50,15 @@ def _find_parquet_file(
     return matches[0]
 
 
-def stitch_vectors_for_zone(zone_gdf: gpd.GeoDataFrame,
-                            tiles_gdf: gpd.GeoDataFrame,
-                            vectors_dir: Path,
-                            layer: LayerName,
-                            height_step: float | None = None,
-                            slope_step_deg: float | None = None,
-                            aspect_step_deg: float | None = None) -> gpd.GeoDataFrame:
+def stitch_vectors_for_zone(
+    zone_gdf: gpd.GeoDataFrame,
+    tiles_gdf: gpd.GeoDataFrame,
+    vectors_dir: Path,
+    layer: LayerName,
+    height_step: float | None = None,
+    slope_step_deg: float | None = None,
+    aspect_step_deg: float | None = None,
+) -> gpd.GeoDataFrame:
     """
     Assemble a mosaic of precomputed vector tiles clipped by a given zone.
 
@@ -98,7 +100,8 @@ def stitch_vectors_for_zone(zone_gdf: gpd.GeoDataFrame,
     """
     if zone_gdf.crs != tiles_gdf.crs:
         raise AttributeError(
-            f'The zone_gdf CRS {zone_gdf.crs.to_epsg()} does not match the tile CRS {tiles_gdf.crs.to_epsg()}')
+            f"The zone_gdf CRS {zone_gdf.crs.to_epsg()} does not match the tile CRS {tiles_gdf.crs.to_epsg()}"
+        )
 
     joined = zone_gdf.sjoin(tiles_gdf, how="inner")
     idx = joined["index_right"].unique()
@@ -123,9 +126,7 @@ def stitch_vectors_for_zone(zone_gdf: gpd.GeoDataFrame,
         else:
             found_paths.append(p)
     if len(found_paths) == 0:
-        raise FileNotFoundError(
-            f"Vector files not found for tiles: {missing}. "
-        )
+        raise FileNotFoundError(f"Vector files not found for tiles: {missing}. ")
 
     parts: list[gpd.GeoDataFrame] = []
     for p in found_paths:
@@ -141,9 +142,7 @@ def stitch_vectors_for_zone(zone_gdf: gpd.GeoDataFrame,
     return pd.concat(parts, ignore_index=True)
 
 
-def stitch_height_isolines(
-        zone_gdf, tiles_gdf, vectors_dir, height_step: float
-) -> gpd.GeoDataFrame:
+def stitch_height_isolines(zone_gdf, tiles_gdf, vectors_dir, height_step: float) -> gpd.GeoDataFrame:
     """
     Convenience wrapper around `stitch_vectors_for_zone` for contour lines.
 
@@ -165,9 +164,7 @@ def stitch_height_isolines(
     )
 
 
-def stitch_height_polygons(
-        zone_gdf, tiles_gdf, vectors_dir, height_step: float
-) -> gpd.GeoDataFrame:
+def stitch_height_polygons(zone_gdf, tiles_gdf, vectors_dir, height_step: float) -> gpd.GeoDataFrame:
     """
     Convenience wrapper for height polygons.
 
@@ -189,9 +186,7 @@ def stitch_height_polygons(
     )
 
 
-def stitch_slope_polygons(
-        zone_gdf, tiles_gdf, vectors_dir, slope_step_deg: float
-) -> gpd.GeoDataFrame:
+def stitch_slope_polygons(zone_gdf, tiles_gdf, vectors_dir, slope_step_deg: float) -> gpd.GeoDataFrame:
     """
     Convenience wrapper for slope polygons.
 
@@ -213,9 +208,7 @@ def stitch_slope_polygons(
     )
 
 
-def stitch_aspect_polygons(
-        zone_gdf, tiles_gdf, vectors_dir, aspect_step_deg: float | None = None
-) -> gpd.GeoDataFrame:
+def stitch_aspect_polygons(zone_gdf, tiles_gdf, vectors_dir, aspect_step_deg: float | None = None) -> gpd.GeoDataFrame:
     """
     Convenience wrapper for aspect polygons.
 

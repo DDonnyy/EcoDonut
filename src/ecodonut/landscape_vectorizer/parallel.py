@@ -8,8 +8,8 @@ from tqdm.auto import tqdm
 
 from ecodonut.landscape_vectorizer.vectorizers import (
     vectorize_aspect,
-    vectorize_slope,
     vectorize_heigh_map,
+    vectorize_slope,
 )
 
 
@@ -27,10 +27,10 @@ def _write_log_row(row: dict, path: Path) -> None:
 
 
 def _process_one_tile(
-        tile_name: str,
-        file_name: str,
-        tif_path: str,
-        **kwargs,
+    tile_name: str,
+    file_name: str,
+    tif_path: str,
+    **kwargs,
 ) -> dict:
     OUT_DIR: Path = kwargs.get("OUT_DIR")
     HEIGHT_STEP: float = kwargs.get("HEIGHT_STEP")
@@ -67,9 +67,7 @@ def _process_one_tile(
             row["height_iso_path"] = str(targets["height_iso"])
             row["height_poly_path"] = str(targets["height_poly"])
         else:
-            gdf_iso, gdf_poly = vectorize_heigh_map(
-                tif_path, step_value=HEIGHT_STEP, mode="both"
-            )
+            gdf_iso, gdf_poly = vectorize_heigh_map(tif_path, step_value=HEIGHT_STEP, mode="both")
 
             if not targets["height_iso"].exists():
                 gdf_iso.to_parquet(targets["height_iso"])
@@ -121,17 +119,15 @@ def _process_one_tile(
 
 
 def run_parallel(
-        tasks: list[tuple[str, str, str]],
-        workers: int,
-        log_path: Path,
-        **kwargs,
+    tasks: list[tuple[str, str, str]],
+    workers: int,
+    log_path: Path,
+    **kwargs,
 ) -> None:
     log_path = Path(log_path)
     with tqdm(total=len(tasks), desc="Vectorizing tiles", unit="tile") as pbar:
         with ProcessPoolExecutor(max_workers=workers) as ex:
-            future_to_task = {
-                ex.submit(_process_one_tile, *t, **kwargs): t for t in tasks
-            }
+            future_to_task = {ex.submit(_process_one_tile, *t, **kwargs): t for t in tasks}
 
             for fut in as_completed(future_to_task):
                 tile_name, file_name, _tif_path = future_to_task[fut]
@@ -142,10 +138,14 @@ def run_parallel(
                     row = {
                         "tile_name": tile_name,
                         "file_name": file_name,
-                        "height_iso_path": "", "height_iso_error": err,
-                        "height_poly_path": "", "height_poly_error": err,
-                        "slope_path": "", "slope_error": err,
-                        "aspect_path": "", "aspect_error": err,
+                        "height_iso_path": "",
+                        "height_iso_error": err,
+                        "height_poly_path": "",
+                        "height_poly_error": err,
+                        "slope_path": "",
+                        "slope_error": err,
+                        "aspect_path": "",
+                        "aspect_error": err,
                         "elapsed_sec": 0.0,
                     }
 
