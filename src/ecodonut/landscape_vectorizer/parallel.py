@@ -33,20 +33,23 @@ def _process_one_tile(
     **kwargs,
 ) -> dict:
     OUT_DIR: Path = kwargs.get("OUT_DIR")
-    HEIGHT_STEP: float = kwargs.get("HEIGHT_STEP")
-    SLOPE_STEP_DEG: float = kwargs.get("SLOPE_STEP_DEG")
-    ASPECT_STEP_DEG: float = kwargs.get("ASPECT_STEP_DEG")
-    SMOOTH_SIGMA_SLOPE: float = kwargs.get("SMOOTH_SIGMA_SLOPE")
-    SMOOTH_SIGMA_ASPECT: float = kwargs.get("SMOOTH_SIGMA_ASPECT")
+    HEIGHT_STEP: float | None = kwargs.get("HEIGHT_STEP")
+    SLOPE_STEP_DEG: float | None = kwargs.get("SLOPE_STEP_DEG")
+    ASPECT_STEP_DEG: float | None = kwargs.get("ASPECT_STEP_DEG")
+    SMOOTH_SIGMA_SLOPE: float | None = kwargs.get("SMOOTH_SIGMA_SLOPE")
+    SMOOTH_SIGMA_ASPECT: float | None = kwargs.get("SMOOTH_SIGMA_ASPECT")
 
     t0 = time.time()
 
-    targets = {
-        "height_iso": OUT_DIR / f"{tile_name}_height_iso_lines_{HEIGHT_STEP}m.parquet",
-        "height_poly": OUT_DIR / f"{tile_name}_height_polygons_{HEIGHT_STEP}m.parquet",
-        "slope": OUT_DIR / f"{tile_name}_slope_deg_polygons_{SLOPE_STEP_DEG}deg.parquet",
-        "aspect": OUT_DIR / f"{tile_name}_aspect_{ASPECT_STEP_DEG}deg_polygons.parquet",
-    }
+    targets: dict[str, Path] = {}
+    if HEIGHT_STEP is not None:
+        targets["height_iso"] = OUT_DIR / f"{tile_name}_height_iso_lines_{HEIGHT_STEP}m.parquet"
+        targets["height_poly"] = OUT_DIR / f"{tile_name}_height_polygons_{HEIGHT_STEP}m.parquet"
+    if SLOPE_STEP_DEG is not None:
+        targets["slope"] = OUT_DIR / f"{tile_name}_slope_deg_polygons_{SLOPE_STEP_DEG}deg.parquet"
+    if ASPECT_STEP_DEG is not None:
+        targets["aspect"] = OUT_DIR / f"{tile_name}_aspect_{ASPECT_STEP_DEG}deg_polygons.parquet"
+
     row = {
         "tile_name": tile_name,
         "file_name": file_name,
@@ -61,58 +64,61 @@ def _process_one_tile(
         "elapsed_sec": 0.0,
     }
 
+    if not targets:
+        row["elapsed_sec"] = round(time.time() - t0, 3)
+        return row
+
     # 1) Высота: изолинии + полигоны
-    try:
-        if targets["height_iso"].exists() and targets["height_poly"].exists():
-            row["height_iso_path"] = str(targets["height_iso"])
-            row["height_poly_path"] = str(targets["height_poly"])
-        else:
-            gdf_iso, gdf_poly = vectorize_heigh_map(tif_path, step_value=HEIGHT_STEP, mode="both")
+    if HEIGHT_STEP is not None:
+        try:
+            if targets["height_iso"].exists() and targets["height_poly"].exists():
+                row["height_iso_path"] = str(targets["height_iso"])
+                row["height_poly_path"] = str(targets["height_poly"])
+            else:
+                gdf_iso, gdf_poly = vectorize_heigh_map(tif_path, step_value=HEIGHT_STEP, mode="both")
 
-            if not targets["height_iso"].exists():
-                gdf_iso.to_parquet(targets["height_iso"])
-            row["height_iso_path"] = str(targets["height_iso"])
+                if not targets["height_iso"].exists():
+                    gdf_iso.to_parquet(targets["height_iso"])
+                row["height_iso_path"] = str(targets["height_iso"])
 
-            if not targets["height_poly"].exists():
-                gdf_poly.to_parquet(targets["height_poly"])
-            row["height_poly_path"] = str(targets["height_poly"])
-    except Exception as e:
-        err_txt = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
-        if not targets["height_iso"].exists():
-            row["height_iso_error"] = err_txt
-        if not targets["height_poly"].exists():
-            row["height_poly_error"] = err_txt
+                if not targets["height_poly"].exists():
+                    gdf_poly.to_parquet(targets["height_poly"])
+                row["height_poly_path"] = str(targets["height_poly"])
+        except Exception as e:
+            err_txt = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
+            # Логируем ошибки только если соответствующие файлы ещё не существуют
+            if "height_iso" in targets and not targets["height_iso"].exists():
+                row["height_iso_error"] = err_txt
+            if "height_poly" in targets and not targets["height_poly"].exists():
+                row["height_poly_error"] = err_txt
 
     # 2) Уклон — полигоны (градусы)
-    try:
-        if targets["slope"].exists():
-            row["slope_path"] = str(targets["slope"])
-        else:
-            gdf_slope = vectorize_slope(
-                tif_path,
-                step_deg=SLOPE_STEP_DEG,
-                smooth_sigma=SMOOTH_SIGMA_SLOPE,
-            )
-            gdf_slope.to_parquet(targets["slope"])
-            row["slope_path"] = str(targets["slope"])
-    except Exception as e:
-        row["slope_error"] = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
+    if SLOPE_STEP_DEG is not None:
+        try:
+            if targets["slope"].exists():
+                row["slope_path"] = str(targets["slope"])
+            else:
+                gdf_slope = vectorize_slope(tif_path, step_deg=SLOPE_STEP_DEG, smooth_sigma=SMOOTH_SIGMA_SLOPE)
+                gdf_slope.to_parquet(targets["slope"])
+                row["slope_path"] = str(targets["slope"])
+        except Exception as e:
+            if "slope" in targets and not targets["slope"].exists():
+                row["slope_error"] = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
 
     # 3) Экспозиция — полигоны
-    try:
-        if targets["aspect"].exists():
-            row["aspect_path"] = str(targets["aspect"])
-        else:
-            gdf_aspect = vectorize_aspect(
-                tif_path,
-                degree_step=ASPECT_STEP_DEG,
-                smooth_sigma=SMOOTH_SIGMA_ASPECT,
-                add_labels=True,
-            )
-            gdf_aspect.to_parquet(targets["aspect"])
-            row["aspect_path"] = str(targets["aspect"])
-    except Exception as e:
-        row["aspect_error"] = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
+    if ASPECT_STEP_DEG is not None:
+        try:
+            if targets["aspect"].exists():
+                row["aspect_path"] = str(targets["aspect"])
+            else:
+                gdf_aspect = vectorize_aspect(
+                    tif_path, degree_step=ASPECT_STEP_DEG, smooth_sigma=SMOOTH_SIGMA_ASPECT, add_labels=True
+                )
+                gdf_aspect.to_parquet(targets["aspect"])
+                row["aspect_path"] = str(targets["aspect"])
+        except Exception as e:
+            if "aspect" in targets and not targets["aspect"].exists():
+                row["aspect_error"] = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
 
     row["elapsed_sec"] = round(time.time() - t0, 3)
     return row

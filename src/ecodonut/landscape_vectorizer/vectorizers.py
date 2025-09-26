@@ -287,13 +287,18 @@ def vectorize_slope(
     dzdy, dzdx = np.gradient(arr_s, dy_m, dx_m)  # м/м
     slope_deg = np.degrees(np.arctan(np.hypot(dzdx, dzdy)))
 
-    vmin, vmax = np.nanmin(slope_deg), np.nanmax(slope_deg)
-    start = math.floor(vmin / step_deg) * step_deg
-    stop = math.ceil(vmax / step_deg) * step_deg
-    levels = np.arange(start, stop + step_deg, step_deg)
+    vmax = np.nanmax(slope_deg)
+    if not np.isfinite(vmax) or vmax < step_deg:
+        return gpd.GeoDataFrame({"slope_deg": [], "geometry": []}, geometry="geometry", crs=crs)
 
-    slope_deg = np.ceil(slope_deg / step_deg) * step_deg
-    slope_f = np.where(np.isnan(slope_deg), vmin - 9999.0, slope_deg)
+    slope_q = np.ceil(slope_deg / step_deg) * step_deg
+    slope_q[slope_q < step_deg] = np.nan
+
+    vmin = np.nanmin(slope_q) if np.isfinite(np.nanmin(slope_q)) else step_deg
+    stop = math.ceil(vmax / step_deg) * step_deg
+    levels = np.arange(step_deg, stop + step_deg, step_deg)
+
+    slope_f = np.where(np.isnan(slope_q), vmin - 9999.0, slope_q)
 
     lines = []
     for lev in levels:
@@ -307,12 +312,17 @@ def vectorize_slope(
                 line = _extend_linestring(line, 0.001)
             lines.append(line)
 
+    if not lines:
+        return gpd.GeoDataFrame({"slope_deg": [], "geometry": []}, geometry="geometry", crs=crs)
+
     bbox_poly = (geo_ref.x_min, geo_ref.y_min, geo_ref.x_max, geo_ref.y_max)
     polys: gpd.GeoDataFrame = _lines_to_polygons(lines, bbox_poly, crs)
 
     polys = _sample_at_rep_points(polys, slope_deg, geo_ref, "slope_deg")
-
     polys["slope_deg"] = np.round(polys["slope_deg"] / step_deg) * step_deg
+
+    polys = polys[polys["slope_deg"] >= step_deg].copy()
+
     return polys
 
 

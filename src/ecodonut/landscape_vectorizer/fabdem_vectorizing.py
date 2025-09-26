@@ -12,13 +12,16 @@ def _build_tasks(
     needed_tiles: pd.DataFrame,
     data_dir: Path,
     out_dir: Path,
-    height_step: float,
-    slope_step_deg: float,
-    aspect_step_deg: float,
+    height_step: float | None,
+    slope_step_deg: float | None,
+    aspect_step_deg: float | None,
     log_csv: Path,
     skip_existing: bool = True,
 ) -> list[tuple[str, str, str]]:
     tasks: list[tuple[str, str, str]] = []
+
+    if height_step is None and slope_step_deg is None and aspect_step_deg is None:
+        raise ValueError("Either height_step or slope_step_deg or aspect_step_deg must be specified")
 
     logged_tiles: set[str] = set()
     if log_csv.exists():
@@ -31,25 +34,30 @@ def _build_tasks(
         file_name = str(rec["file_name"])
         tile_name = Path(file_name).stem
 
-        targets = {
-            "height_iso": out_dir / f"{tile_name}_height_iso_lines_{height_step}m.parquet",
-            "height_poly": out_dir / f"{tile_name}_height_polygons_{height_step}m.parquet",
-            "slope": out_dir / f"{tile_name}_slope_deg_polygons_{slope_step_deg}deg.parquet",
-            "aspect": out_dir / f"{tile_name}_aspect_{aspect_step_deg}deg_polygons.parquet",
-        }
+        targets: dict[str, Path] = {}
+        if height_step is not None:
+            targets["height_iso"] = out_dir / f"{tile_name}_height_iso_lines_{height_step}m.parquet"
+            targets["height_poly"] = out_dir / f"{tile_name}_height_polygons_{height_step}m.parquet"
+        if slope_step_deg is not None:
+            targets["slope"] = out_dir / f"{tile_name}_slope_deg_polygons_{slope_step_deg}deg.parquet"
+        if aspect_step_deg is not None:
+            targets["aspect"] = out_dir / f"{tile_name}_aspect_{aspect_step_deg}deg_polygons.parquet"
+
+        if not targets:
+            continue
 
         if skip_existing and all(p.exists() for p in targets.values()):
             if tile_name not in logged_tiles:
                 row = {
                     "tile_name": tile_name,
                     "file_name": file_name,
-                    "height_iso_path": str(targets["height_iso"]),
+                    "height_iso_path": str(targets["height_iso"]) if "height_iso" in targets else "",
                     "height_iso_error": "",
-                    "height_poly_path": str(targets["height_poly"]),
+                    "height_poly_path": str(targets["height_poly"]) if "height_poly" in targets else "",
                     "height_poly_error": "",
-                    "slope_path": str(targets["slope"]),
+                    "slope_path": str(targets["slope"]) if "slope" in targets else "",
                     "slope_error": "",
-                    "aspect_path": str(targets["aspect"]),
+                    "aspect_path": str(targets["aspect"]) if "aspect" in targets else "",
                     "aspect_error": "",
                     "elapsed_sec": 0.0,
                 }
@@ -61,14 +69,14 @@ def _build_tasks(
             row = {
                 "tile_name": tile_name,
                 "file_name": file_name,
-                "height_iso_path": "",
-                "height_iso_error": f"TIF not found for {file_name}",
-                "height_poly_path": "",
-                "height_poly_error": f"TIF not found for {file_name}",
-                "slope_path": "",
-                "slope_error": f"TIF not found for {file_name}",
-                "aspect_path": "",
-                "aspect_error": f"TIF not found for {file_name}",
+                "height_iso_path": "" if "height_iso" in targets else "",
+                "height_iso_error": (f"TIF not found for {file_name}" if "height_iso" in targets else ""),
+                "height_poly_path": "" if "height_poly" in targets else "",
+                "height_poly_error": (f"TIF not found for {file_name}" if "height_poly" in targets else ""),
+                "slope_path": "" if "slope" in targets else "",
+                "slope_error": (f"TIF not found for {file_name}" if "slope" in targets else ""),
+                "aspect_path": "" if "aspect" in targets else "",
+                "aspect_error": (f"TIF not found for {file_name}" if "aspect" in targets else ""),
                 "elapsed_sec": 0.0,
             }
             _write_log_row(row, log_csv)
@@ -104,10 +112,10 @@ def vectorize_fabdem_tiles(
     log_csv: str | Path,
     tiles_gdf: gpd.GeoDataFrame | None = None,
     filter_gdf: gpd.GeoDataFrame | None = None,
-    height_step: float = 5.0,
-    slope_step_deg: float = 5.0,
-    smooth_sigma_slope: float = 1.0,
-    aspect_step_deg: float = 90.0,
+    height_step: float | None = 5.0,
+    slope_step_deg: float | None = 5.0,
+    smooth_sigma_slope: float= 1.0,
+    aspect_step_deg: float | None = 90.0,
     smooth_sigma_aspect: float = 1.0,
     max_workers: int = 4,
     skip_existing: bool = True,
@@ -139,20 +147,30 @@ def vectorize_fabdem_tiles(
             Required when `filter_gdf` is provided.
         filter_gdf (GeoDataFrame | None):
             Zone(s) of interest; when given, only intersecting tiles are processed.
-        height_step (float):
+        height_step (float | None, default=5.0):
             Elevation step (meters) for isolines/polygons.
-        slope_step_deg (float):
+            If None → elevation layers (isolines and polygons) are not generated.
+        slope_step_deg (float | None, default=5.0):
             Slope class width in degrees for slope polygons.
-        smooth_sigma_slope (float):
+            If None → slope polygons are not generated.
+        smooth_sigma_slope (float, default=1.0):
             Gaussian smoothing sigma for slope computation.
-        aspect_step_deg (float):
+            Ignored if `slope_step_deg` is None.
+        aspect_step_deg (float | None, default=90.0):
             Aspect class width in degrees.
-        smooth_sigma_aspect (float):
+            If None → aspect polygons are not generated.
+        smooth_sigma_aspect (float, default=1.0):
             Gaussian smoothing sigma for aspect computation.
-        max_workers (int):
+            Ignored if `aspect_step_deg` is None.
+        max_workers (int, default=4):
             Number of worker processes.
-        skip_existing (bool):
+        skip_existing (bool, default=True):
             If True, do not recompute tiles whose outputs already exist.
+
+    Raises:
+        ValueError:
+            • If `filter_gdf` is provided without `tiles_gdf`.
+            • If no tasks were created (e.g. all step parameters are None or all tiles are already processed).
 
     Returns:
         None:
@@ -180,6 +198,8 @@ def vectorize_fabdem_tiles(
         log_csv=log_csv,
         skip_existing=skip_existing,
     )
+    if not tasks:
+        raise ValueError("No tasks were created.")
 
     par_kwargs = {
         "OUT_DIR": out_dir,
