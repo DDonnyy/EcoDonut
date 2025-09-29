@@ -112,10 +112,10 @@ def vectorize_fabdem_tiles(
     log_csv: str | Path,
     tiles_gdf: gpd.GeoDataFrame | None = None,
     filter_gdf: gpd.GeoDataFrame | None = None,
-    height_step: float | None = 5.0,
-    slope_step_deg: float | None = 5.0,
+    height_step: int | None = 5,
+    slope_step_deg: int | None = 2,
     smooth_sigma_slope: float= 1.0,
-    aspect_step_deg: float | None = 90.0,
+    aspect_step_deg: int | None = 90,
     smooth_sigma_aspect: float = 1.0,
     max_workers: int = 4,
     skip_existing: bool = True,
@@ -147,16 +147,16 @@ def vectorize_fabdem_tiles(
             Required when `filter_gdf` is provided.
         filter_gdf (GeoDataFrame | None):
             Zone(s) of interest; when given, only intersecting tiles are processed.
-        height_step (float | None, default=5.0):
+        height_step (int | None, default=5.0):
             Elevation step (meters) for isolines/polygons.
             If None → elevation layers (isolines and polygons) are not generated.
-        slope_step_deg (float | None, default=5.0):
+        slope_step_deg (int | None, default=5.0):
             Slope class width in degrees for slope polygons.
             If None → slope polygons are not generated.
         smooth_sigma_slope (float, default=1.0):
             Gaussian smoothing sigma for slope computation.
             Ignored if `slope_step_deg` is None.
-        aspect_step_deg (float | None, default=90.0):
+        aspect_step_deg (int | None, default=90.0):
             Aspect class width in degrees.
             If None → aspect polygons are not generated.
         smooth_sigma_aspect (float, default=1.0):
@@ -187,6 +187,13 @@ def vectorize_fabdem_tiles(
         if tiles_gdf is None:
             raise ValueError("Needs tiles_gdf to be provided for filtering by area gdf.")
         needed_tiles = _collect_tiles_by_filter(tiles_gdf, filter_gdf)
+
+    if height_step is not None:
+        height_step = int(height_step)
+    if slope_step_deg is not None:
+        slope_step_deg = int(slope_step_deg)
+    if aspect_step_deg is not None:
+        aspect_step_deg = int(aspect_step_deg)
 
     tasks = _build_tasks(
         needed_tiles=needed_tiles,
