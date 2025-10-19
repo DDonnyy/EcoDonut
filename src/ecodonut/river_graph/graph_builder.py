@@ -8,8 +8,92 @@ import numpy as np
 import pandas as pd
 from dask.diagnostics import ProgressBar
 from loguru import logger
-from shapely import LineString, MultiLineString, Point, convex_hull, unary_union
-from tqdm.auto import tqdm
+from shapely import Point, convex_hull, unary_union, is_empty, get_type_id, union_all
+from shapely import points, linestrings, intersection, length as shp_length
+
+
+def _calc_edge_width_vec(pdf, max_dist, basic_dist):
+
+    ux = pdf["ux"].to_numpy(float)
+    uy = pdf["uy"].to_numpy(float)
+    vx = pdf["vx"].to_numpy(float)
+    vy = pdf["vy"].to_numpy(float)
+
+    ang = np.arctan2(vy - uy, vx - ux)
+    perp = ang + np.pi / 2
+    dx_max = (max_dist / 2) * np.cos(perp)
+    dy_max = (max_dist / 2) * np.sin(perp)
+    dx_b = (basic_dist / 2) * np.cos(perp)
+    dy_b = (basic_dist / 2) * np.sin(perp)
+
+    def _mk_perp(cx, cy, dx, dy):
+        return linestrings(np.stack([cx - dx, cy - dy, cx, cy, cx + dx, cy + dy], axis=1).reshape(-1, 3, 2))
+
+    perp_uv_max = _mk_perp(vx, vy, dx_max, dy_max)  # перпендикуляр у V
+    perp_vu_max = _mk_perp(ux, uy, dx_max, dy_max)  # перпендикуляр у U
+
+    perp_uv_basic = _mk_perp(vx, vy, dx_b, dy_b)
+    perp_vu_basic = _mk_perp(ux, uy, dx_b, dy_b)
+
+    gv = pdf["geometry_water_v"].to_numpy(object)
+    gu = pdf["geometry_water_u"].to_numpy(object)
+
+    inter_uv = intersection(perp_uv_max, gv)
+    inter_vu = intersection(perp_vu_max, gu)
+
+    res_uv = np.empty(len(pdf), dtype=object)
+    res_vu = np.empty(len(pdf), dtype=object)
+
+    empty_uv = is_empty(inter_uv)
+    not_empty_uv = ~empty_uv
+
+    typ_uv = np.full(len(pdf), -1, dtype=int)
+    typ_uv[not_empty_uv] = get_type_id(inter_uv[not_empty_uv])
+    is_ls_uv = typ_uv == 1  # LINESTRING is 1
+    is_mls_uv = np.isin(typ_uv, (5, 7))  #  MULTILINESTRING is 5 GEOMETRYCOLLECTION is 7
+
+    res_uv[is_ls_uv] = inter_uv[is_ls_uv]
+
+    P_u = points(ux, uy)
+    P_v = points(vx, vy)
+    idx_uv_mls = np.where(is_mls_uv)[0]
+    for i in idx_uv_mls:
+        mls = inter_uv[i]
+        pt = P_v[i]
+        chosen = None
+        for line in mls.geoms:
+            if line.contains(pt):
+                chosen = line
+                break
+        res_uv[i] = chosen
+
+    empty_vu = is_empty(inter_vu)
+    not_empty_vu = ~empty_vu
+    typ_vu = np.full(len(pdf), -1, dtype=int)
+    typ_vu[not_empty_vu] = get_type_id(inter_vu[not_empty_vu])
+    is_ls_vu = typ_vu == 1
+    is_mls_vu = np.isin(typ_vu, (5, 7))
+
+    res_vu[is_ls_vu] = inter_vu[is_ls_vu]
+
+    idx_vu_mls = np.where(is_mls_vu)[0]
+    for i in idx_vu_mls:
+        mls = inter_vu[i]
+        pt = P_u[i]
+        chosen = None
+        for line in mls.geoms:
+            if line.contains(pt):
+                chosen = line
+                break
+        res_vu[i] = chosen
+
+    need_basic_uv = np.fromiter((g is None for g in res_uv), dtype=bool, count=len(res_uv))
+    need_basic_vu = np.fromiter((g is None for g in res_vu), dtype=bool, count=len(res_vu))
+
+    res_uv[need_basic_uv] = perp_uv_basic[need_basic_uv]
+    res_vu[need_basic_vu] = perp_vu_basic[need_basic_vu]
+
+    return pd.DataFrame({"geometry_v": res_uv, "geometry_u": res_vu}, index=pdf.index)
 
 
 def construct_water_graph(
@@ -43,187 +127,131 @@ def construct_water_graph(
         `width`, `length`, `weight`, and `geometry`. Node attributes include `x` and `y` coordinates.
 
     """
+    logger.debug("Started calculating river graph!")
     local_crs = rivers.estimate_utm_crs()
-    rivers.to_crs(local_crs, inplace=True)
+    rivers = rivers.to_crs(local_crs)[["geometry"]]
+    water = water.to_crs(local_crs)[["geometry"]]
 
-    if water.crs != rivers.crs:
-        water.to_crs(rivers.crs, inplace=True)
+    node_by_pt: dict[tuple[float, float], int] = {}
+    nodes_xy: list[tuple[float, float]] = []
+    edges_raw: list[tuple[int, int, float, float, float, float, float]] = []  # u,v,ux,uy,vx,vy,length
 
-    rivers["geometry"] = rivers.geometry
-    water["geometry"] = water.geometry
-    rivers.set_geometry("geometry", inplace=True)
-    water.set_geometry("geometry", inplace=True)
-    node_id = 0
-    nodes = []
-    edges = []
+    def get_node_id(x: float, y: float) -> int:
+        pt = (x, y)
+        nid = node_by_pt.get(pt)
+        if nid is None:
+            nid = len(nodes_xy)
+            node_by_pt[pt] = nid
+            nodes_xy.append(pt)
+        return nid
 
-    def distance(x1, y1, x2, y2):
-        return math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2)
+    def process_edge(p1: tuple[float, float], p2: tuple[float, float]):
+        u = get_node_id(p1[0], p1[1])
+        v = get_node_id(p2[0], p2[1])
+        length = math.hypot(p2[0] - p1[0], p2[1] - p1[1])
+        edges_raw.append((u, v, p1[0], p1[1], p2[0], p2[1], length))
 
-    def add_node(node_id_to_add, x, y):
-        nodes.append({"node_id": node_id_to_add, "point": (x, y)})
-
-    def add_edge(u, v, length, ux, uy, vx, vy):
-        edges.append({"u": u, "v": v, "length": length, "ux": ux, "uy": uy, "vx": vx, "vy": vy})
-
-    def process_edge(p1, p2):
-        nonlocal node_id
-        add_node(node_id, p1[0], p1[1])
-        node_id += 1
-        add_edge(node_id - 1, node_id, distance(p1[0], p1[1], p2[0], p2[1]), p1[0], p1[1], p2[0], p2[1])
-        add_node(node_id, p2[0], p2[1])
-        node_id += 1
-
-    def explode_linestrings_to_edgenodes(loc):
-        coords = loc.geometry.segmentize(segmentize_len).coords
-        for i, _ in enumerate(coords[:-1]):
-            process_edge(coords[i], coords[i + 1])
-
-    rivers.apply(explode_linestrings_to_edgenodes, axis=1)
+    rivers = rivers.explode(ignore_index=True)
+    coords = rivers.geometry.segmentize(segmentize_len).get_coordinates()  # x,y
+    coords["x2"] = coords.groupby(level=0)["x"].shift(-1)
+    coords["y2"] = coords.groupby(level=0)["y"].shift(-1)
+    pairs = coords.dropna(subset=["x2", "y2"])
+    for x1, y1, x2, y2 in pairs[["x", "y", "x2", "y2"]].to_numpy():
+        process_edge((float(x1), float(y1)), (float(x2), float(y2)))
     logger.debug("Done exploding rivers!")
-    nodes, edges = pd.DataFrame(nodes), pd.DataFrame(edges)
-    grouped_nodes = nodes.groupby("point")["node_id"].agg(list).reset_index()
-    logger.debug("Done grouping nodes by coordinates!")
-    mapping = {node_id: idx for idx, node_ids in enumerate(grouped_nodes["node_id"]) for node_id in node_ids}
 
-    edges["u"] = edges["u"].map(mapping)
-    edges["v"] = edges["v"].map(mapping)
-    logger.debug("Done remapping edges!")
-    grouped_nodes_gdf = gpd.GeoDataFrame(geometry=[Point(x[0], x[1]) for x in grouped_nodes["point"]], crs=local_crs)
-    grouped_nodes = grouped_nodes.drop(columns="node_id").reset_index(names="node_id")
-    rivers_poly = gpd.sjoin(water, grouped_nodes_gdf, how="inner", predicate="intersects")
-    points_within_water = rivers_poly["index_right"].to_list()
+    grouped_nodes_gdf = gpd.GeoDataFrame(geometry=gpd.points_from_xy(*np.array(nodes_xy, dtype=float).T), crs=local_crs)
 
-    rivers_poly_v = rivers_poly[["index_right", "geometry"]].drop_duplicates(subset="index_right")
+    rivers_poly = gpd.sjoin(water, grouped_nodes_gdf, how="inner", predicate="covers")
+    node_to_water = rivers_poly.drop_duplicates("index_right", keep="first").set_index("index_right")["geometry"]
+    edf = pd.DataFrame(edges_raw, columns=["u", "v", "ux", "uy", "vx", "vy", "length"])
 
-    edgenodes = (
-        pd.merge(edges, rivers_poly_v, how="left", left_on="v", right_on="index_right")
-        .drop(columns=["index_right"])
-        .rename({"geometry": "geometry_water_v"}, axis=1)
-    )
-    not_visited_nodes = list(
-        set(edgenodes[edgenodes["geometry_water_v"].notna()]["v"].tolist()) ^ set(points_within_water)
-    )
-    rivers_poly_u = rivers_poly_v[rivers_poly_v["index_right"].isin(not_visited_nodes)]
-    edgenodes = (
-        pd.merge(edgenodes, rivers_poly_u, how="left", left_on="u", right_on="index_right")
-        .drop(columns=["index_right"])
-        .rename({"geometry": "geometry_water_u"}, axis=1)
-    )
-    logger.debug("Calculating river's widths...")
-    dask_edgenodes = dd.from_pandas(edgenodes, npartitions=os.cpu_count() * 2 + 1)
-    dask_edgenodes["geometries"] = dask_edgenodes.apply(
-        lambda x: _calc_edge_width(x, max_dist=max_river_width, basic_dist=basic_river_width), axis=1, meta=tuple
-    )
+    edf = edf.join(node_to_water.rename("geometry_water_v"), on="v")
+    visited_v = pd.Index(edf.loc[edf["geometry_water_v"].notna(), "v"].unique())
+    not_visited_nodes = node_to_water.index.difference(visited_v)
+
+    node_to_water_u = node_to_water.reindex(not_visited_nodes)
+    edf = edf.join(node_to_water_u.rename("geometry_water_u"), on="u")
+
+    rng = np.random.default_rng(64)
+    edf["_shuf"] = rng.integers(0, 2**32 - 1, size=len(edf), dtype=np.uint32)
+    edf = edf.sort_values("_shuf").drop(columns="_shuf").reset_index(drop=True)
+
+    ddf = dd.from_pandas(edf, npartitions=os.cpu_count() * 2)
     with ProgressBar():
-        edgenodes = dask_edgenodes.compute()
+        edg = ddf.map_partitions(
+            _calc_edge_width_vec,
+            max_river_width,
+            basic_river_width,
+            meta={"geometry_v": "object", "geometry_u": "object"},
+        ).compute()
 
-    edgenodes[["geometry_v", "geometry_u"]] = pd.DataFrame(edgenodes["geometries"].tolist(), index=edgenodes.index)
-    grouped_nodes = grouped_nodes.merge(
-        edgenodes[["v", "geometry_v"]], how="left", left_on="node_id", right_on="v"
-    ).drop(columns="v")
-    grouped_nodes = grouped_nodes.merge(
-        edgenodes[["u", "geometry_u"]], how="left", left_on="node_id", right_on="u"
-    ).drop(columns="u")
-    grouped_nodes["geometry"] = grouped_nodes["geometry_v"].combine_first(grouped_nodes["geometry_u"])
-    grouped_nodes.drop(columns=["geometry_v", "geometry_u"], inplace=True)
-    grouped_nodes["width"] = grouped_nodes["geometry"].apply(
-        lambda x: x.length if isinstance(x, LineString) else np.inf
-    )
-    grouped_nodes = grouped_nodes.loc[grouped_nodes.groupby("node_id")["width"].idxmin()]
-    edges = (
-        edges.merge(grouped_nodes[["node_id", "width", "geometry"]], left_on="u", right_on="node_id")
-        .drop(columns="node_id")
-        .rename(columns={"width": "width_u", "geometry": "geometry_u"})
-    )
-    edges = (
-        edges.merge(grouped_nodes[["node_id", "width", "geometry"]], left_on="v", right_on="node_id")
-        .drop(columns="node_id")
-        .rename(columns={"width": "width_v", "geometry": "geometry_v"})
-    )
-    edges.replace(np.inf, basic_river_width, inplace=True)
-    grouped_nodes[["x", "y"]] = pd.DataFrame(grouped_nodes["point"].tolist(), index=grouped_nodes.index)
-    grouped_nodes.reset_index(drop=True, inplace=True)
+    edg = pd.concat([edf[["u", "v", "ux", "uy", "vx", "vy", "length"]], edg], axis=1)
 
-    graph = nx.DiGraph()
-    for _, edge in tqdm(edges.iterrows(), total=len(edges), desc="Processing edges"):
-        u = int(edge["u"])
-        v = int(edge["v"])
-        width = (edge["width_u"] + edge["width_v"]) / 2
-        geometry_u = edge["geometry_u"]
-        geometry_v = edge["geometry_v"]
-        if pd.isna(geometry_u) and pd.isna(geometry_v):
-            geometry = None
-        else:
-            if pd.isna(geometry_u):
-                geometry_u = Point(edge["ux"], edge["uy"])
-            if pd.isna(geometry_v):
-                geometry_v = Point(edge["vx"], edge["vy"])
-            geometry = convex_hull(unary_union([geometry_u, geometry_v]))
-        graph.add_edge(
-            u,
-            v,
-            width=width,
-            length=edge["length"],
-            weight=width * edge["length"] / basic_river_speed,
-            geometry=geometry,
+    cand_v = edg[["v", "geometry_v"]].copy().rename(columns={"geometry_v": "geometry", "v": "node"})
+    cand_v["glen"] = shp_length(cand_v["geometry"])
+    cand_v = cand_v[~np.isnan(cand_v["glen"])]
+
+    best_v_idx = cand_v.groupby("node")["glen"].idxmin()
+    best_v = cand_v.loc[best_v_idx].set_index("node")
+
+    cand_u = edg[["u", "geometry_u"]].copy().rename(columns={"geometry_u": "geometry", "u": "node"})
+    cand_u["glen"] = shp_length(cand_u["geometry"])
+    cand_u = cand_u[~np.isnan(cand_u["glen"])]
+
+    all_nodes = np.unique(np.concatenate([edg["u"], edg["v"]]))
+
+    need_u = np.setdiff1d(all_nodes, best_v.index.to_numpy())
+
+    cand_u = cand_u[cand_u["node"].isin(need_u)]
+    best_u_idx = cand_u.groupby("node")["glen"].idxmin()
+    best_u = cand_u.loc[best_u_idx].set_index("node")
+
+    nodes_df = pd.concat([best_v, best_u])
+
+    N = len(nodes_xy)
+    node_width = pd.Series(float(basic_river_width), index=range(N))
+    node_geom = pd.Series([None] * N, index=range(N), dtype=object)
+
+    node_width.loc[nodes_df.index] = nodes_df["glen"].to_numpy()
+    node_geom.loc[nodes_df.index] = nodes_df["geometry"].to_numpy()
+
+    width_u = node_width.loc[edg["u"]].to_numpy()
+    width_v = node_width.loc[edg["v"]].to_numpy()
+    edge_width = (width_u + width_v) / 2.0
+
+    length = edg["length"].to_numpy(dtype=float)
+    weight = edge_width * length / float(basic_river_speed)
+
+    edg["geometry_u"] = edg["u"].map(node_geom)
+    edg["geometry_v"] = edg["v"].map(node_geom)
+
+    def _edge_geom(gu, gv, ux, uy, vx, vy):
+        if gu is None:
+            gu = Point(ux, uy)
+        if gv is None:
+            gv = Point(vx, vy)
+        return convex_hull(unary_union([gu, gv]))
+
+    edge_geometry = [
+        _edge_geom(gu, gv, ux, uy, vx, vy)
+        for gu, gv, ux, uy, vx, vy in zip(
+            edg["geometry_u"], edg["geometry_v"], edg["ux"], edg["uy"], edg["vx"], edg["vy"]
         )
+    ]
 
-    graph.add_nodes_from(set(grouped_nodes.index) - set(graph.nodes))
-    for col in grouped_nodes[["x", "y"]].columns:
-        nx.set_node_attributes(graph, name=col, values=grouped_nodes[col].dropna().astype(np.float32))
-    graph.graph["crs"] = local_crs.to_epsg()
-    return graph
+    G = nx.DiGraph()
+    G.add_nodes_from(range(N))
 
+    nodes_xy_arr = np.asarray(nodes_xy, dtype=float)
+    G.add_nodes_from((i, {"x": float(x), "y": float(y)}) for i, (x, y) in enumerate(nodes_xy_arr))
 
-def _calc_edge_width(loc, max_dist, basic_dist):
-    def perpendicular_to_line_end(p1, p2, length: float):
-        angle = math.atan2(p2[1] - p1[1], p2[0] - p1[0])
-        perp_angle = angle + math.pi / 2
+    edge_data = (
+        (int(u), int(v), {"width": float(w), "length": float(L), "weight": float(W), "geometry": geom})
+        for (u, v), w, L, W, geom in zip(edg[["u", "v"]].to_numpy(), edge_width, length, weight, edge_geometry)
+    )
+    G.add_edges_from(edge_data)
 
-        dx = (length / 2) * math.cos(perp_angle)
-        dy = (length / 2) * math.sin(perp_angle)
+    G.graph["crs"] = local_crs.to_epsg()
 
-        perp_start = (p2[0] - dx, p2[1] - dy)
-        perp_end = (p2[0] + dx, p2[1] + dy)
-        return LineString([perp_start, p2, perp_end])
-
-    def trim_line_by_polygon(perpendicular, river_polygon, mid_point):
-        def get_line_containing_point(multilinestring, point):
-            for line in multilinestring.geoms:
-                if line.contains(point):
-                    return line
-            return None
-
-        intersection = perpendicular.intersection(river_polygon)
-        match intersection:
-            case _ if intersection.is_empty:
-                return None
-            case LineString():
-                return intersection
-            case MultiLineString():
-                return get_line_containing_point(intersection, mid_point)
-            case _:
-                return None
-
-    if loc.geometry_water_u is None and loc.geometry_water_v is None:
-        return perpendicular_to_line_end((loc.ux, loc.uy), (loc.vx, loc.vy), basic_dist), perpendicular_to_line_end(
-            (loc.vx, loc.vy), (loc.ux, loc.uy), basic_dist
-        )
-    cutted_perp_uv = None
-    cutted_perp_vu = None
-
-    if loc.geometry_water_v is not None:
-        perp_uv = perpendicular_to_line_end((loc.ux, loc.uy), (loc.vx, loc.vy), max_dist)
-        cutted_perp_uv = trim_line_by_polygon(perp_uv, loc.geometry_water_v, Point((loc.vx, loc.vy)))
-
-    if loc.geometry_water_u is not None:
-        perp_vu = perpendicular_to_line_end((loc.vx, loc.vy), (loc.ux, loc.uy), max_dist)
-        cutted_perp_vu = trim_line_by_polygon(perp_vu, loc.geometry_water_u, Point((loc.ux, loc.uy)))
-
-    if cutted_perp_uv is None:
-        cutted_perp_uv = perpendicular_to_line_end((loc.ux, loc.uy), (loc.vx, loc.vy), basic_dist)
-
-    if cutted_perp_vu is None:
-        cutted_perp_vu = perpendicular_to_line_end((loc.vx, loc.vy), (loc.ux, loc.uy), basic_dist)
-    return cutted_perp_uv, cutted_perp_vu
+    return G
