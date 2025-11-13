@@ -9,7 +9,8 @@ from loguru import logger
 from pyproj import CRS, Transformer
 from pyproj.aoi import AreaOfInterest
 from pyproj.database import query_utm_crs_info
-from shapely import MultiLineString, node
+from scipy import stats
+from shapely import MultiLineString, node, contains_xy
 from shapely.geometry import LineString, Polygon
 from shapely.ops import polygonize
 from skimage import measure
@@ -80,6 +81,75 @@ def _read_singleband_geotiff(
     return arr, georef
 
 
+def _crop_raster_by_territory(
+    arr: np.ndarray,
+    georef: GeoRef,
+    territory_gdf: gpd.GeoDataFrame,
+) -> tuple[np.ndarray, GeoRef]:
+    if territory_gdf.crs is None:
+        raise ValueError("territory_gdf must have a CRS")
+
+    if CRS.from_user_input(territory_gdf.crs) != georef.crs:
+        territory = territory_gdf.to_crs(georef.crs)
+    else:
+        territory = territory_gdf
+
+    terr_union = territory.union_all()
+    if terr_union.is_empty:
+        raise ValueError("territory_gdf has empty geometry after unary_union")
+
+    minx, miny, maxx, maxy = terr_union.bounds
+
+    minx = max(minx, georef.x_min)
+    maxx = min(maxx, georef.x_max)
+    miny = max(miny, georef.y_min)
+    maxy = min(maxy, georef.y_max)
+
+    if minx >= maxx or miny >= maxy:
+        raise ValueError("territory_gdf bbox does not intersect raster extent")
+
+    col_min = int(np.floor((minx - georef.x_min) / georef.sx + georef.i0))
+    col_max = int(np.ceil((maxx - georef.x_min) / georef.sx + georef.i0))
+    row_min = int(np.floor((georef.y_max - maxy) / georef.sy + georef.j0))
+    row_max = int(np.ceil((georef.y_max - miny) / georef.sy + georef.j0))
+
+    col_min = max(0, min(col_min, georef.width - 1))
+    col_max = max(0, min(col_max, georef.width - 1))
+    row_min = max(0, min(row_min, georef.height - 1))
+    row_max = max(0, min(row_max, georef.height - 1))
+
+    if col_min > col_max or row_min > row_max:
+        raise ValueError("Computed crop window is empty")
+
+    arr_cropped = arr[row_min : row_max + 1, col_min : col_max + 1].copy()
+    new_height, new_width = arr_cropped.shape
+
+    sx, sy = georef.sx, georef.sy
+    hx, hy = sx * 0.5, sy * 0.5
+
+    new_x_min = georef.x_min + (col_min - georef.i0) * sx
+    new_y_max = georef.y_max - (row_min - georef.j0) * sy
+
+    new_x_max = new_x_min + (new_width - 1) * sx + hx
+    new_y_min = new_y_max - (new_height - 1) * sy - hy
+
+    new_georef = GeoRef(
+        x_min=new_x_min,
+        x_max=new_x_max,
+        y_min=new_y_min,
+        y_max=new_y_max,
+        sx=sx,
+        sy=sy,
+        i0=georef.i0,
+        j0=georef.j0,
+        width=new_width,
+        height=new_height,
+        crs=georef.crs,
+    )
+
+    return arr_cropped, new_georef
+
+
 def _utm_crs_by_extent(georef: GeoRef) -> CRS:
     infos = query_utm_crs_info(
         datum_name="WGS 84",
@@ -130,13 +200,67 @@ def _lines_to_polygons(
 
 
 def _sample_at_rep_points(gdf: gpd.GeoDataFrame, arr: np.ndarray, georef: GeoRef, value_name: str) -> gpd.GeoDataFrame:
-    rep = gdf.representative_point()
-    cols = np.round((rep.x.values - georef.x_min) / georef.sx + georef.i0).astype(int)
-    rows = np.round((georef.y_max - rep.y.values) / georef.sy + georef.j0).astype(int)
-    cols = np.clip(cols, 0, georef.width - 1)
-    rows = np.clip(rows, 0, georef.height - 1)
-    vals = arr[rows, cols]
-    gdf[value_name] = vals
+    if gdf.empty:
+        gdf[value_name] = []
+        return gdf
+
+    px_diag = (georef.sx**2 + georef.sy**2) ** 0.5
+    half_diag = 0.5 * px_diag
+
+    out_vals = []
+
+    for geom in gdf.geometry:
+        if geom.is_empty:
+            out_vals.append(np.nan)
+            continue
+
+        minx, miny, maxx, maxy = geom.bounds
+        col_min = int(np.floor((minx - georef.x_min) / georef.sx + georef.i0))
+        col_max = int(np.ceil((maxx - georef.x_min) / georef.sx + georef.i0))
+        row_min = int(np.floor((georef.y_max - maxy) / georef.sy + georef.j0))
+        row_max = int(np.ceil((georef.y_max - miny) / georef.sy + georef.j0))
+
+        col_min = max(0, min(col_min, georef.width - 1))
+        col_max = max(0, min(col_max, georef.width - 1))
+        row_min = max(0, min(row_min, georef.height - 1))
+        row_max = max(0, min(row_max, georef.height - 1))
+
+        if col_min > col_max or row_min > row_max:
+            out_vals.append(np.nan)
+            continue
+
+        cols = np.arange(col_min, col_max + 1)
+        rows = np.arange(row_min, row_max + 1)
+        CC, RR = np.meshgrid(cols, rows)
+        lon, lat = _rc_to_lonlat(CC.ravel(), RR.ravel(), georef)
+
+        inside = contains_xy(geom, lon, lat)
+        vals = arr[RR.ravel()[inside], CC.ravel()[inside]].astype(float)
+        vals = vals[~np.isnan(vals)]
+
+        if vals.size == 0:
+            grown = geom.buffer(half_diag)
+            inside = contains_xy(grown, lon, lat)
+            vals = arr[RR.ravel()[inside], CC.ravel()[inside]].astype(float)
+            vals = vals[~np.isnan(vals)]
+
+        if vals.size == 0:
+            cx, cy = geom.centroid.x, geom.centroid.y
+            c = int(round((cx - georef.x_min) / georef.sx + georef.i0))
+            r = int(round((georef.y_max - cy) / georef.sy + georef.j0))
+            c = np.clip(c, 0, georef.width - 1)
+            r = np.clip(r, 0, georef.height - 1)
+            v = float(arr[r, c])
+            vals = np.array([]) if np.isnan(v) else np.array([v], dtype=float)
+
+        if vals.size == 0:
+            out_vals.append(np.nan)
+            continue
+
+        m = stats.mode(vals, keepdims=False).mode
+        out_vals.append(float(m))
+
+    gdf[value_name] = out_vals
     return gdf
 
 
@@ -158,6 +282,7 @@ def vectorize_heigh_map(
     mode: Literal["polygons", "iso_lines", "both"] = "polygons",
     smooth_sigma: float = 0.0,
     crs: int | CRS | str = 4326,
+    territory_gdf: gpd.GeoDataFrame | None = None,
 ) -> gpd.GeoDataFrame:
     """
     Vectorize a DEM into contour lines and/or height polygons.
@@ -187,6 +312,8 @@ def vectorize_heigh_map(
             Sigma for Gaussian smoothing before vectorization. 0 disables smoothing.
         crs (int | str | pyproj.CRS):
             CRS assigned to the output GeoDataFrame(s) (default EPSG:4326).
+        territory_gdf (GeoDataFrame | None):
+            GeoDataFrame containing the territory to crop TIFF before vectorizing.
 
     Returns:
         GeoDataFrame | tuple[GeoDataFrame, GeoDataFrame]:
@@ -199,6 +326,11 @@ def vectorize_heigh_map(
             If required GeoTIFF tags are missing.
     """
     arr, geo_ref = _read_singleband_geotiff(in_path, band=band)
+
+    if territory_gdf is not None:
+        logger.debug("Cropping raster by territory_gdf bbox")
+        arr, geo_ref = _crop_raster_by_territory(arr, geo_ref, territory_gdf)
+
     arr_work = gaussian(arr, sigma=smooth_sigma, preserve_range=True) if smooth_sigma > 0 else arr
 
     zmin, zmax = np.nanmin(arr_work), np.nanmax(arr_work)
@@ -227,19 +359,26 @@ def vectorize_heigh_map(
             levs.append(float(lev))
 
     gdf_lines = None
+    out_crs = CRS.from_user_input(crs)
+
     if mode in ("iso_lines", "both"):
-        gdf_lines = gpd.GeoDataFrame({"height": levs}, geometry=lines, crs=crs)
+        gdf_lines = gpd.GeoDataFrame({"height": levs}, geometry=lines, crs=out_crs)
+        if territory_gdf is not None:
+            gdf_lines = gdf_lines.clip(territory_gdf.to_crs(out_crs), keep_geom_type=True)
 
     gdf_polys = None
     if mode in ("polygons", "both"):
         bbox_poly = (geo_ref.x_min, geo_ref.y_min, geo_ref.x_max, geo_ref.y_max)
-        polys = _lines_to_polygons(lines, bbox_poly, crs)
-        polys = _sample_at_rep_points(polys, arr, geo_ref, "height")
+        polys = _lines_to_polygons(lines, bbox_poly, out_crs)
+        polys = _sample_at_rep_points(polys, arr_work, geo_ref, "height")
         polys["height"] = np.round(polys["height"] / step_value) * step_value
         gdf_polys = polys
+        if territory_gdf is not None:
+            gdf_polys = gdf_polys.clip(territory_gdf.to_crs(out_crs), keep_geom_type=True)
 
     if mode == "both":
         return gdf_lines, gdf_polys
+
     return gdf_lines if mode == "iso_lines" else gdf_polys
 
 
@@ -283,9 +422,10 @@ def vectorize_slope(
     to_utm = Transformer.from_crs(geo_ref.crs, utm_crs, always_xy=True)
     dx_m, dy_m = _get_dxdy_m(geo_ref, to_utm)
 
-    arr_s = gaussian(arr, sigma=smooth_sigma, preserve_range=True) if smooth_sigma > 0 else arr
-    dzdy, dzdx = np.gradient(arr_s, dy_m, dx_m)  # м/м
-    slope_deg = np.degrees(np.arctan(np.hypot(dzdx, dzdy)))
+    dzdy, dzdx = np.gradient(arr, dy_m, dx_m)  # м/м
+    slope_degrees = np.degrees(np.arctan(np.hypot(dzdx, dzdy)))
+
+    slope_deg = gaussian(slope_degrees, sigma=smooth_sigma, preserve_range=True) if smooth_sigma > 0 else slope_degrees
 
     vmax = np.nanmax(slope_deg)
     if not np.isfinite(vmax) or vmax < step_deg:
