@@ -98,7 +98,7 @@ def _process_one_tile(
             if targets["slope"].exists():
                 row["slope_path"] = str(targets["slope"])
             else:
-                gdf_slope = vectorize_slope(tif_path, step_deg=SLOPE_STEP_DEG, smooth_sigma=SMOOTH_SIGMA_SLOPE)
+                gdf_slope = vectorize_slope(tif_path, degree_step=SLOPE_STEP_DEG, smooth_sigma=SMOOTH_SIGMA_SLOPE)
                 gdf_slope.to_parquet(targets["slope"])
                 row["slope_path"] = str(targets["slope"])
         except Exception as e:

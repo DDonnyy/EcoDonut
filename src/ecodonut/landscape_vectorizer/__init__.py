@@ -6,4 +6,8 @@ from .project_tile_getter import (
     stitch_height_polygons,
     stitch_slope_polygons,
     stitch_aspect_polygons,
+    vectorize_height_isolines_for_zone,
+    vectorize_height_polygons_for_zone,
+    vectorize_aspect_polygons_for_zone,
+    vectorize_slope_polygons_for_zone,
 )
