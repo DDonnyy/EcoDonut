@@ -1,6 +1,6 @@
-from .vectorizers import vectorize_slope, vectorize_aspect, vectorize_heigh_map
-from .fabdem_vectorizing import vectorize_fabdem_tiles
-from .project_tile_getter import (
+from .fabdem_vectorizers import vectorize_slope, vectorize_aspect, vectorize_heigh_map
+from .fabdem_bulk_vectorizer import vectorize_fabdem_tiles
+from .project_fabdem_vectorizer import (
     stitch_vectors_for_zone,
     stitch_height_isolines,
     stitch_height_polygons,
