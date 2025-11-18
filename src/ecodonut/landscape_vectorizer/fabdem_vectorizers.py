@@ -1,5 +1,4 @@
 import math
-
 from pathlib import Path
 from typing import Literal
 
@@ -9,14 +8,19 @@ from loguru import logger
 from pyproj import CRS, Transformer
 from pyproj.aoi import AreaOfInterest
 from pyproj.database import query_utm_crs_info
-from scipy import stats
-from shapely import MultiLineString, contains_xy, node
-from shapely.geometry import LineString, Polygon
-from shapely.ops import polygonize
+from shapely.geometry import LineString
 from skimage import measure
 from skimage.filters import gaussian
 
-from ecodonut.landscape_vectorizer.tiff_readers import GeoRef, _read_singleband_geotiff, _crop_raster_by_territory
+from ecodonut.landscape_vectorizer.tiff_utils import (
+    GeoRef,
+    _crop_raster_by_territory,
+    _extend_linestring,
+    _lines_to_polygons,
+    _rc_to_lonlat,
+    _read_singleband_geotiff,
+    _sample_at_rep_points,
+)
 
 
 def _utm_crs_by_extent(georef: GeoRef) -> CRS:
@@ -32,105 +36,6 @@ def _utm_crs_by_extent(georef: GeoRef) -> CRS:
     if not infos:
         raise RuntimeError("Не удалось подобрать UTM CRS по экстенту.")
     return CRS.from_epsg(infos[0].code)
-
-
-def _rc_to_lonlat(cols: np.ndarray, rows: np.ndarray, georef: GeoRef) -> tuple[np.ndarray, np.ndarray]:
-    lon = georef.x_min + (cols - georef.i0) * georef.sx
-    lat = georef.y_max - (rows - georef.j0) * georef.sy
-    return lon, lat
-
-
-def _extend_linestring(line: LineString, distance: float = 0.001) -> LineString:
-    if len(line.coords) < 2:
-        return line
-    x0, y0 = line.coords[0]
-    x1, y1 = line.coords[1]
-    dx0, dy0 = x0 - x1, y0 - y1
-    L0 = math.hypot(dx0, dy0) or 1.0
-    new_start = (x0 + dx0 / L0 * distance, y0 + dy0 / L0 * distance)
-
-    xN1, yN1 = line.coords[-2]
-    xN, yN = line.coords[-1]
-    dx1, dy1 = xN - xN1, yN - yN1
-    L1 = math.hypot(dx1, dy1) or 1.0
-    new_end = (xN + dx1 / L1 * distance, yN + dy1 / L1 * distance)
-
-    return LineString([new_start, *list(line.coords[1:-1]), new_end])
-
-
-def _lines_to_polygons(
-    lines: list[LineString], bbox: tuple[float, float, float, float], out_crs: CRS
-) -> gpd.GeoDataFrame:
-    logger.debug(f"Polygonizing {len(lines)} lines!")
-    frame = Polygon.from_bounds(*bbox)
-    lines_w_bounds = lines + [LineString(frame.exterior.coords)]
-    polys = list(polygonize(node(MultiLineString(lines_w_bounds))))
-    return gpd.GeoDataFrame(geometry=polys, crs=out_crs).clip(frame, keep_geom_type=True)
-
-
-def _sample_at_rep_points(gdf: gpd.GeoDataFrame, arr: np.ndarray, georef: GeoRef, value_name: str) -> gpd.GeoDataFrame:
-    if gdf.empty:
-        gdf[value_name] = []
-        return gdf
-
-    px_diag = (georef.sx**2 + georef.sy**2) ** 0.5
-    half_diag = 0.5 * px_diag
-
-    out_vals = []
-
-    for geom in gdf.geometry:
-        if geom.is_empty:
-            out_vals.append(np.nan)
-            continue
-
-        minx, miny, maxx, maxy = geom.bounds
-        col_min = int(np.floor((minx - georef.x_min) / georef.sx + georef.i0))
-        col_max = int(np.ceil((maxx - georef.x_min) / georef.sx + georef.i0))
-        row_min = int(np.floor((georef.y_max - maxy) / georef.sy + georef.j0))
-        row_max = int(np.ceil((georef.y_max - miny) / georef.sy + georef.j0))
-
-        col_min = max(0, min(col_min, georef.width - 1))
-        col_max = max(0, min(col_max, georef.width - 1))
-        row_min = max(0, min(row_min, georef.height - 1))
-        row_max = max(0, min(row_max, georef.height - 1))
-
-        if col_min > col_max or row_min > row_max:
-            out_vals.append(np.nan)
-            continue
-
-        cols = np.arange(col_min, col_max + 1)
-        rows = np.arange(row_min, row_max + 1)
-        CC, RR = np.meshgrid(cols, rows)
-        lon, lat = _rc_to_lonlat(CC.ravel(), RR.ravel(), georef)
-
-        inside = contains_xy(geom, lon, lat)
-        vals = arr[RR.ravel()[inside], CC.ravel()[inside]].astype(float)
-        vals = vals[~np.isnan(vals)]
-
-        if vals.size == 0:
-            grown = geom.buffer(half_diag)
-            inside = contains_xy(grown, lon, lat)
-            vals = arr[RR.ravel()[inside], CC.ravel()[inside]].astype(float)
-            vals = vals[~np.isnan(vals)]
-
-        if vals.size == 0:
-            cx, cy = geom.centroid.x, geom.centroid.y
-            c = int(round((cx - georef.x_min) / georef.sx + georef.i0))
-            r = int(round((georef.y_max - cy) / georef.sy + georef.j0))
-            c = np.clip(c, 0, georef.width - 1)
-            r = np.clip(r, 0, georef.height - 1)
-            v = float(arr[r, c])
-            vals = np.array([]) if np.isnan(v) else np.array([v], dtype=float)
-
-        if vals.size == 0:
-            out_vals.append(np.nan)
-            continue
-
-        m = stats.mode(vals, keepdims=False).mode
-        out_vals.append(float(m))
-
-    gdf[value_name] = out_vals
-    return gdf.dissolve(by=value_name, as_index=False).explode(ignore_index=True)
 
 
 def _get_dxdy_m(G: GeoRef, to_utm: Transformer) -> tuple[float, float]:
