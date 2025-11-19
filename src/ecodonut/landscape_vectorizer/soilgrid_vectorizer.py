@@ -215,7 +215,7 @@ def vectorize_soilgrid(
                   Binned silt content (%), multiple of `step_pct`.
             - ``sand_pct`` : float
                   Binned sand content (%), multiple of `step_pct`.
-            - ``coarse_pct`` : float
+            - ``coarse`` : float
                   Mean coarse fragments content from cfvo, in cm³/dm³.
             - ``usda_texture`` : str
                   USDA texture class name (English or Russian, depending on `usda_to_russian`).
