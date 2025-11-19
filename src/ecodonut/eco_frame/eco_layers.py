@@ -90,6 +90,7 @@ default_layers_options: Dict[str, LayerOptions] = {
         initial_impact=3,
         fading=0.1,
         russian_name="Водный объект",
+        geom_func=lambda x: x.buffer(5) if x.geom_type == "LineString" else x,
     ),
     "woods": LayerOptions(
         initial_impact=3,

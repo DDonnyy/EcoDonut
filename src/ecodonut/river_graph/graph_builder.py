@@ -8,8 +8,19 @@ import numpy as np
 import pandas as pd
 from dask.diagnostics import ProgressBar
 from loguru import logger
-from shapely import Point, convex_hull, unary_union, is_empty, get_type_id, union_all
-from shapely import points, linestrings, intersection, length as shp_length
+from shapely import (
+    Point,
+    convex_hull,
+    get_type_id,
+    intersection,
+    is_empty,
+)
+from shapely import length as shp_length
+from shapely import (
+    linestrings,
+    points,
+    unary_union,
+)
 
 
 def _calc_edge_width_vec(pdf, max_dist, basic_dist):
