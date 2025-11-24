@@ -42,14 +42,17 @@ def mark_territory(eco_frame: EcoFrame, zone: gpd.GeoDataFrame) -> TerritoryMark
     zone = zone.copy()
     zone = zone[["geometry"]]
     zone.to_crs(eco_frame.local_crs, inplace=True)
-    clipped_eco_frame = eco_frame.eco_frame.clip(zone, keep_geom_type=True)
-
-    total_area = sum(clipped_eco_frame.geometry.area)
+    if eco_frame.eco_frame.is_empty or len(eco_frame.eco_frame) == 0:
+        clipped_eco_frame = gpd.GeoDataFrame()
+    else:
+        clipped_eco_frame = eco_frame.eco_frame.clip(zone, keep_geom_type=True)
 
     if clipped_eco_frame.empty:
         desc = "В границах проектной территории нет данных об объектах оказывающих влияние на экологию"
         obj_msg = "В границы проектной территории не попадает влияние от обьектов, оказывающих влияние на экологию."
         return TerritoryMark(0, obj_msg, 0, desc, clipped_eco_frame)
+
+    total_area = sum(clipped_eco_frame.geometry.area)
 
     clipped_eco_frame["impact_percent"] = clipped_eco_frame.geometry.area / total_area
     abs_mark = round(sum(clipped_eco_frame["layer_impact"] * clipped_eco_frame["impact_percent"]), 2)
