@@ -42,12 +42,12 @@ def mark_territory(eco_frame: EcoFrame, zone: gpd.GeoDataFrame) -> TerritoryMark
     zone = zone.copy()
     zone = zone[["geometry"]]
     zone.to_crs(eco_frame.local_crs, inplace=True)
-    if eco_frame.eco_frame.is_empty or len(eco_frame.eco_frame) == 0:
+    if len(eco_frame.eco_frame) == 0:
         clipped_eco_frame = gpd.GeoDataFrame()
     else:
         clipped_eco_frame = eco_frame.eco_frame.clip(zone, keep_geom_type=True)
 
-    if clipped_eco_frame.empty:
+    if len(clipped_eco_frame) == 0:
         desc = "В границах проектной территории нет данных об объектах оказывающих влияние на экологию"
         obj_msg = "В границы проектной территории не попадает влияние от обьектов, оказывающих влияние на экологию."
         return TerritoryMark(0, obj_msg, 0, desc, clipped_eco_frame)
