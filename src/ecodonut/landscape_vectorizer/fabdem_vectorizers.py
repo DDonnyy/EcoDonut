@@ -14,12 +14,12 @@ from skimage.filters import gaussian
 
 from ecodonut.landscape_vectorizer.tiff_utils import (
     GeoRef,
-    _crop_raster_by_territory,
+    crop_raster_by_territory,
     _extend_linestring,
     _lines_to_polygons,
     _rc_to_lonlat,
-    _read_singleband_geotiff,
-    _sample_at_rep_points,
+    read_singleband_geotiff,
+    sample_at_rep_points,
 )
 
 
@@ -100,10 +100,10 @@ def vectorize_heigh_map(
         ValueError:
             If required GeoTIFF tags are missing.
     """
-    arr, geo_ref = _read_singleband_geotiff(in_path, band=band)
+    arr, geo_ref = read_singleband_geotiff(in_path, band=band)
 
     if territory_gdf is not None:
-        arr, geo_ref = _crop_raster_by_territory(arr, geo_ref, territory_gdf)
+        arr, geo_ref = crop_raster_by_territory(arr, geo_ref, territory_gdf)
 
     arr_work = gaussian(arr, sigma=smooth_sigma, preserve_range=True) if smooth_sigma > 0 else arr
 
@@ -143,7 +143,7 @@ def vectorize_heigh_map(
     if mode in ("polygons", "both"):
         bbox_poly = (geo_ref.x_min, geo_ref.y_min, geo_ref.x_max, geo_ref.y_max)
         polys = _lines_to_polygons(lines, bbox_poly, geo_ref.crs)
-        polys = _sample_at_rep_points(polys, arr_work, geo_ref, "height")
+        polys = sample_at_rep_points(polys, arr_work, geo_ref, "height")
         polys["height"] = np.round(polys["height"] / step_value) * step_value
         gdf_polys = polys
         if territory_gdf is not None:
@@ -196,10 +196,10 @@ def vectorize_slope(
         GeoDataFrame:
             Polygons with attribute "slope_deg" (class center/step-rounded).
     """
-    arr, geo_ref = _read_singleband_geotiff(in_path, band=band)
+    arr, geo_ref = read_singleband_geotiff(in_path, band=band)
 
     if territory_gdf is not None:
-        arr, geo_ref = _crop_raster_by_territory(arr, geo_ref, territory_gdf)
+        arr, geo_ref = crop_raster_by_territory(arr, geo_ref, territory_gdf)
 
     utm_crs = _utm_crs_by_extent(geo_ref)
     to_utm = Transformer.from_crs(geo_ref.crs, utm_crs, always_xy=True)
@@ -243,7 +243,7 @@ def vectorize_slope(
     bbox_poly = (geo_ref.x_min, geo_ref.y_min, geo_ref.x_max, geo_ref.y_max)
     polys: gpd.GeoDataFrame = _lines_to_polygons(lines, bbox_poly, geo_ref.crs)
 
-    polys = _sample_at_rep_points(polys, slope_deg, geo_ref, "slope_deg")
+    polys = sample_at_rep_points(polys, slope_deg, geo_ref, "slope_deg")
     polys["slope_deg"] = np.round(polys["slope_deg"] / degree_step) * degree_step
     polys = polys[polys["slope_deg"] >= degree_step].copy()
 
@@ -315,10 +315,10 @@ def vectorize_aspect(
         GeoDataFrame:
             Aspect polygons with "aspect_deg" (quantized degrees) and, optionally, "aspect_label".
     """
-    arr, geo_ref = _read_singleband_geotiff(in_path, band=band)
+    arr, geo_ref = read_singleband_geotiff(in_path, band=band)
 
     if territory_gdf is not None:
-        arr, geo_ref = _crop_raster_by_territory(arr, geo_ref, territory_gdf)
+        arr, geo_ref = crop_raster_by_territory(arr, geo_ref, territory_gdf)
 
     utm_crs = _utm_crs_by_extent(geo_ref)
     to_utm = Transformer.from_crs(geo_ref.crs, utm_crs, always_xy=True)
@@ -355,7 +355,7 @@ def vectorize_aspect(
     bbox_poly = (geo_ref.x_min, geo_ref.y_min, geo_ref.x_max, geo_ref.y_max)
     polys: gpd.GeoDataFrame = _lines_to_polygons(lines, bbox_poly, geo_ref.crs)
 
-    polys = _sample_at_rep_points(polys, aspect_deg, geo_ref, "aspect_deg")
+    polys = sample_at_rep_points(polys, aspect_deg, geo_ref, "aspect_deg")
 
     if territory_gdf is not None:
         polys = polys.clip(territory_gdf.to_crs(polys.crs), keep_geom_type=True)

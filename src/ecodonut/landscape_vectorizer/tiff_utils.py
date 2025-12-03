@@ -27,7 +27,7 @@ class GeoRef:
     crs: CRS
 
 
-def _read_singleband_geotiff(
+def read_singleband_geotiff(
     in_path: Path,
     band: int | None = None,  # None -> первая полоса (если [H,W]); если [B,H,W] – укажи индекс
 ) -> tuple[np.ndarray, GeoRef]:
@@ -76,7 +76,7 @@ def _read_singleband_geotiff(
     return arr, georef
 
 
-def _crop_raster_by_territory(
+def crop_raster_by_territory(
     arr: np.ndarray,
     georef: GeoRef,
     territory_gdf: gpd.GeoDataFrame,
@@ -173,7 +173,7 @@ def _lines_to_polygons(
     return gpd.GeoDataFrame(geometry=polys, crs=out_crs).clip(frame, keep_geom_type=True)
 
 
-def _sample_at_rep_points(gdf: gpd.GeoDataFrame, arr: np.ndarray, georef: GeoRef, value_name: str) -> gpd.GeoDataFrame:
+def sample_at_rep_points(gdf: gpd.GeoDataFrame, arr: np.ndarray, georef: GeoRef, value_name: str) -> gpd.GeoDataFrame:
     if gdf.empty:
         gdf[value_name] = []
         return gdf
