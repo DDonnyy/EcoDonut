@@ -14,3 +14,4 @@ from .project_fabdem_cache_getter import (
     stitch_aspect_polygons,
 )
 from .soilgrid_vectorizer import vectorize_soilgrid
+from .glofas_flood_vectorizer import vectorize_flood_depth

@@ -8,7 +8,7 @@ from loguru import logger
 from pyproj import CRS
 from shapely.geometry import Polygon
 
-from ecodonut.landscape_vectorizer.tiff_utils import GeoRef, _crop_raster_by_territory, _read_singleband_geotiff
+from ecodonut.landscape_vectorizer.tiff_utils import GeoRef, crop_raster_by_territory, read_singleband_geotiff
 
 soil_var = Literal["cfvo", "clay", "silt", "sand"]
 
@@ -264,9 +264,9 @@ def vectorize_soilgrid(
             tif = tiles_root / tile / var / f"{var}_{depth_label}_mean.tif"
             if not tif.exists():
                 raise FileNotFoundError(f"File not found: {tif}")
-            arr, G = _read_singleband_geotiff(tif)
+            arr, G = read_singleband_geotiff(tif)
             if zone_gdf is not None:
-                arr, G = _crop_raster_by_territory(arr, G, zone_gdf)
+                arr, G = crop_raster_by_territory(arr, G, zone_gdf)
             if georef is None:
                 georef = G
             else:
