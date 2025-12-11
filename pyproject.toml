@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "ecodonut"
-version = "3.2.0"
+version = "3.2.1"
 description = ""
 authors = ["DDonnyy <63115678+DDonnyy@users.noreply.github.com>"]
 readme = "README.md"

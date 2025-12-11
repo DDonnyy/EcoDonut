@@ -3,9 +3,11 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 from loguru import logger
+from pyproj import CRS
 from shapely.ops import polygonize, unary_union
 
 from ecodonut.utils import get_closest_nodes, graph_to_gdf, polygons_to_linestring, rivers_dijkstra
+from ecodonut.utils.graph_utils import reproject_graph
 
 
 def simulate_spill(
@@ -40,7 +42,12 @@ def simulate_spill(
     if pollution_column not in pollution_sources.columns:
         raise RuntimeError(f"{pollution_column} is not in geodataframe,specify your pollution_column attribute")
 
-    local_crs = river_graph.graph["crs"]
+    graph_crs = river_graph.graph["crs"]
+    graph_crs = CRS.from_user_input(graph_crs)
+
+    local_crs = pollution_sources.estimate_utm_crs()
+    if graph_crs != local_crs:
+        river_graph = reproject_graph(river_graph, local_crs)
 
     pollution_sources.to_crs(local_crs, inplace=True)
     pollution_sources[["closest_node", "dist"]] = get_closest_nodes(pollution_sources, river_graph)

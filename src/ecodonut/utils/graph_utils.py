@@ -5,8 +5,81 @@ from typing import Any
 import geopandas as gpd
 import networkx as nx
 import numpy as np
+import pandas as pd
 from scipy.spatial import KDTree
-from shapely import Geometry
+from shapely import Geometry, Point
+from shapely.geometry.base import BaseGeometry
+
+
+def reproject_graph(graph: nx.Graph, target_crs) -> nx.Graph:
+    """
+    Reproject node coordinates (`x`, `y`) and edge geometries to a new CRS (in place).
+
+    Builds GeoDataFrames for nodes and for edges that have shapely `geometry`, applies
+    `GeoDataFrame.to_crs(target_crs)`, writes transformed coordinates/geometries back to the graph,
+    and updates `graph.graph["crs"]` to the resulting target CRS.
+
+    Parameters:
+        graph (nx.Graph): Graph with current CRS in `graph["crs"]`; nodes carry `x`, `y`
+            in that CRS, edges may carry shapely `geometry` in the same CRS.
+        target_crs: Target CRS accepted by GeoPandas (EPSG int, string like `"EPSG:3857"`,
+            or a `pyproj.CRS`).
+
+    Returns:
+        (nx.Graph): The same graph instance (mutated in place) with updated coordinates/geometries and CRS.
+
+    Raises:
+        ValueError: If `graph.graph["crs"]` is missing.
+
+    Notes:
+        - Only nodes with both `x` and `y` are updated.
+        - Edges without shapely geometry are left unchanged.
+        - If an edge `geometry` is stored as a WKT string, it is not reprojected; parse it first.
+    """
+    try:
+        current_crs = graph.graph["crs"]
+    except KeyError as exc:
+        raise ValueError("Graph does not have 'crs' attribute") from exc
+
+    nodes_items = [(n, d) for n, d in graph.nodes(data=True) if "x" in d and "y" in d]
+    if nodes_items:
+        node_ids = [n for n, _ in nodes_items]
+        node_points = [Point(float(d["x"]), float(d["y"])) for _, d in nodes_items]
+        nodes_gdf = gpd.GeoDataFrame(index=node_ids, geometry=node_points, crs=current_crs).to_crs(target_crs)
+        for nid, geom in nodes_gdf.geometry.items():
+            graph.nodes[nid]["x"] = float(geom.x)
+            graph.nodes[nid]["y"] = float(geom.y)
+
+    if graph.is_multigraph():
+        edge_records = [
+            (u, v, k, data)
+            for u, v, k, data in graph.edges(keys=True, data=True)
+            if isinstance(data.get("geometry"), BaseGeometry)
+        ]
+        if edge_records:
+            idx = [(u, v, k) for u, v, k, _ in edge_records]
+            geoms = [data["geometry"] for _, _, _, data in edge_records]
+            edges_gdf = gpd.GeoDataFrame(
+                index=pd.MultiIndex.from_tuples(idx, names=["u", "v", "k"]), geometry=geoms, crs=current_crs
+            ).to_crs(target_crs)
+            target_crs = edges_gdf.crs
+            for (u, v, k), geom in edges_gdf.geometry.items():
+                graph.edges[u, v, k]["geometry"] = geom
+    else:
+        edge_records = [
+            (u, v, data) for u, v, data in graph.edges(data=True) if isinstance(data.get("geometry"), BaseGeometry)
+        ]
+        if edge_records:
+            idx = [(u, v) for u, v, _ in edge_records]
+            geoms = [data["geometry"] for _, _, data in edge_records]
+            edges_gdf = gpd.GeoDataFrame(
+                index=pd.MultiIndex.from_tuples(idx, names=["u", "v"]), geometry=geoms, crs=current_crs
+            ).to_crs(target_crs)
+            target_crs = edges_gdf.crs
+            for (u, v), geom in edges_gdf.geometry.items():
+                graph.edges[u, v]["geometry"] = geom
+    graph.graph["crs"] = target_crs
+    return graph
 
 
 def rivers_dijkstra(graph, source: int, weight: str, cutoff: float):
@@ -100,7 +173,7 @@ def get_closest_nodes(gdf_from: gpd.GeoDataFrame, to_nx_graph: nx.Graph) -> list
 
 
 def graph_to_gdf(
-    graph: nx.MultiDiGraph,
+        graph: nx.MultiDiGraph,
 ) -> gpd.GeoDataFrame | None:
     """
     Converts nx graph to gpd.GeoDataFrame as edges.
