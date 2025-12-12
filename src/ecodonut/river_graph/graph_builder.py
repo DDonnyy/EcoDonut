@@ -140,12 +140,13 @@ def construct_water_graph(
     """
     logger.debug("Started calculating river graph!")
     local_crs = rivers.estimate_utm_crs()
-    rivers = rivers.to_crs(local_crs)[["geometry"]]
+    keep_cols = ["geometry"] + (["name"] if "name" in rivers.columns else [])
+    rivers = rivers.to_crs(local_crs)[keep_cols]
     water = water.to_crs(local_crs)[["geometry"]]
 
     node_by_pt: dict[tuple[float, float], int] = {}
     nodes_xy: list[tuple[float, float]] = []
-    edges_raw: list[tuple[int, int, float, float, float, float, float]] = []  # u,v,ux,uy,vx,vy,length
+    edges_raw: list[tuple[int, int, float, float, float, float, float, object]] = []  # u,v,ux,uy,vx,vy,length,name
 
     def get_node_id(x: float, y: float) -> int:
         pt = (x, y)
@@ -156,33 +157,31 @@ def construct_water_graph(
             nodes_xy.append(pt)
         return nid
 
-    def process_edge(p1: tuple[float, float], p2: tuple[float, float]):
+    def process_edge(p1: tuple[float, float], p2: tuple[float, float], name):
         u = get_node_id(p1[0], p1[1])
         v = get_node_id(p2[0], p2[1])
         length = math.hypot(p2[0] - p1[0], p2[1] - p1[1])
-        edges_raw.append((u, v, p1[0], p1[1], p2[0], p2[1], length))
+        edges_raw.append((u, v, p1[0], p1[1], p2[0], p2[1], length, name))
 
     rivers = rivers.explode(ignore_index=True)
     coords = rivers.geometry.segmentize(segmentize_len).get_coordinates()  # x,y
     coords["x2"] = coords.groupby(level=0)["x"].shift(-1)
     coords["y2"] = coords.groupby(level=0)["y"].shift(-1)
     pairs = coords.dropna(subset=["x2", "y2"])
-    for x1, y1, x2, y2 in pairs[["x", "y", "x2", "y2"]].to_numpy():
-        process_edge((float(x1), float(y1)), (float(x2), float(y2)))
+    names = rivers["name"] if "name" in rivers.columns else None
+    for idx, x1, y1, x2, y2 in pairs.reset_index()[["index", "x", "y", "x2", "y2"]].to_numpy():
+        nm = None if names is None else names.iloc[int(idx)]
+        process_edge((float(x1), float(y1)), (float(x2), float(y2)), nm)
     logger.debug("Done exploding rivers!")
 
     grouped_nodes_gdf = gpd.GeoDataFrame(geometry=gpd.points_from_xy(*np.array(nodes_xy, dtype=float).T), crs=local_crs)
 
     rivers_poly = gpd.sjoin(water, grouped_nodes_gdf, how="inner", predicate="covers")
     node_to_water = rivers_poly.drop_duplicates("index_right", keep="first").set_index("index_right")["geometry"]
-    edf = pd.DataFrame(edges_raw, columns=["u", "v", "ux", "uy", "vx", "vy", "length"])
+    edf = pd.DataFrame(edges_raw, columns=["u", "v", "ux", "uy", "vx", "vy", "length", "name"])
 
     edf = edf.join(node_to_water.rename("geometry_water_v"), on="v")
-    visited_v = pd.Index(edf.loc[edf["geometry_water_v"].notna(), "v"].unique())
-    not_visited_nodes = node_to_water.index.difference(visited_v)
-
-    node_to_water_u = node_to_water.reindex(not_visited_nodes)
-    edf = edf.join(node_to_water_u.rename("geometry_water_u"), on="u")
+    edf = edf.join(node_to_water.rename("geometry_water_u"), on="u")
 
     rng = np.random.default_rng(64)
     edf["_shuf"] = rng.integers(0, 2**32 - 1, size=len(edf), dtype=np.uint32)
@@ -197,28 +196,17 @@ def construct_water_graph(
             meta={"geometry_v": "object", "geometry_u": "object"},
         ).compute()
 
-    edg = pd.concat([edf[["u", "v", "ux", "uy", "vx", "vy", "length"]], edg], axis=1)
+    edg = pd.concat([edf[["u", "v", "ux", "uy", "vx", "vy", "length","name"]], edg], axis=1)
 
-    cand_v = edg[["v", "geometry_v"]].copy().rename(columns={"geometry_v": "geometry", "v": "node"})
-    cand_v["glen"] = shp_length(cand_v["geometry"])
-    cand_v = cand_v[~np.isnan(cand_v["glen"])]
+    cand_v = edg[["v", "geometry_v"]].rename(columns={"v": "node", "geometry_v": "geometry"})
+    cand_u = edg[["u", "geometry_u"]].rename(columns={"u": "node", "geometry_u": "geometry"})
+    cand = pd.concat([cand_v, cand_u], ignore_index=True)
 
-    best_v_idx = cand_v.groupby("node")["glen"].idxmin()
-    best_v = cand_v.loc[best_v_idx].set_index("node")
+    cand["glen"] = shp_length(cand["geometry"])
+    cand = cand[~np.isnan(cand["glen"])]
 
-    cand_u = edg[["u", "geometry_u"]].copy().rename(columns={"geometry_u": "geometry", "u": "node"})
-    cand_u["glen"] = shp_length(cand_u["geometry"])
-    cand_u = cand_u[~np.isnan(cand_u["glen"])]
-
-    all_nodes = np.unique(np.concatenate([edg["u"], edg["v"]]))
-
-    need_u = np.setdiff1d(all_nodes, best_v.index.to_numpy())
-
-    cand_u = cand_u[cand_u["node"].isin(need_u)]
-    best_u_idx = cand_u.groupby("node")["glen"].idxmin()
-    best_u = cand_u.loc[best_u_idx].set_index("node")
-
-    nodes_df = pd.concat([best_v, best_u])
+    best_idx = cand.groupby("node")["glen"].idxmin()
+    nodes_df = cand.loc[best_idx].set_index("node")
 
     N = len(nodes_xy)
     node_width = pd.Series(float(basic_river_width), index=range(N))
@@ -258,9 +246,12 @@ def construct_water_graph(
     G.add_nodes_from((i, {"x": float(x), "y": float(y)}) for i, (x, y) in enumerate(nodes_xy_arr))
 
     edge_data = (
-        (int(u), int(v), {"width": float(w), "length": float(L), "weight": float(W), "geometry": geom})
-        for (u, v), w, L, W, geom in zip(edg[["u", "v"]].to_numpy(), edge_width, length, weight, edge_geometry)
+        (int(u), int(v), {"name": nm, "width": float(w), "length": float(L), "weight": float(W), "geometry": geom})
+        for (u, v, nm), w, L, W, geom in zip(
+            edg[["u", "v", "name"]].to_numpy(), edge_width, length, weight, edge_geometry
+        )
     )
+
     G.add_edges_from(edge_data)
 
     G.graph["crs"] = local_crs.to_epsg()

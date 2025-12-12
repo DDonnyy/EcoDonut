@@ -46,6 +46,8 @@ def simulate_spill(
     graph_crs = CRS.from_user_input(graph_crs)
 
     local_crs = pollution_sources.estimate_utm_crs()
+    if river_graph.is_multigraph():
+        river_graph = nx.DiGraph(river_graph)
     if graph_crs != local_crs:
         river_graph = reproject_graph(river_graph, local_crs)
 
