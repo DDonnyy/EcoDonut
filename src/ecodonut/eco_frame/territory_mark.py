@@ -57,19 +57,23 @@ def mark_territory(eco_frame: EcoFrame, zone: gpd.GeoDataFrame) -> TerritoryMark
     clipped_eco_frame["impact_percent"] = clipped_eco_frame.geometry.area / total_area
     abs_mark = round(sum(clipped_eco_frame["layer_impact"] * clipped_eco_frame["impact_percent"]), 2)
 
-    sources_in_zone = zone.sjoin(eco_frame.eco_influencers_sources, how="inner")
-    effects_in_zone_indexes = zone.sjoin(eco_frame.eco_influencers_buffers, how="inner")["index_right"]
+    negative_sources = gpd.GeoDataFrame()
+    negative_effectors = gpd.GeoDataFrame()
 
-    negative_types = list(eco_frame.negative_types.keys())
+    if len(eco_frame.eco_influencers_sources)>0:
+        sources_in_zone = zone.sjoin(eco_frame.eco_influencers_sources, how="inner")
+        effects_in_zone_indexes = zone.sjoin(eco_frame.eco_influencers_buffers, how="inner")["index_right"]
+        negative_types = list(eco_frame.negative_types.keys())
 
-    negative_sources = sources_in_zone[sources_in_zone["type"].isin(negative_types)]
+        negative_sources = sources_in_zone[sources_in_zone["type"].isin(negative_types)]
 
-    negative_effectors = eco_frame.eco_influencers_sources.loc[effects_in_zone_indexes]
-    negative_effectors = negative_effectors[negative_effectors["type"].isin(negative_types)]
-    negative_effectors = negative_effectors[~negative_effectors["name"].isin(negative_sources["name"])]
+        negative_effectors = eco_frame.eco_influencers_sources.loc[effects_in_zone_indexes]
+        negative_effectors = negative_effectors[negative_effectors["type"].isin(negative_types)]
+        negative_effectors = negative_effectors[~negative_effectors["name"].isin(negative_sources["name"])]
 
-    negative_sources = negative_sources[["name", "type"]].drop_duplicates()
-    negative_effectors = negative_effectors[["name", "type"]].drop_duplicates()
+        negative_sources = negative_sources[["name", "type"]].drop_duplicates()
+        negative_effectors = negative_effectors[["name", "type"]].drop_duplicates()
+
     if len(negative_sources) > 0:
         obj_message = (
             f"На проектной территории находятся {len(negative_sources)} источник(а/ов) негативного воздействия:"

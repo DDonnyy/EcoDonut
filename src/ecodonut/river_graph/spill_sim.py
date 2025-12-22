@@ -1,5 +1,3 @@
-import re
-
 import geopandas as gpd
 import networkx as nx
 import numpy as np
@@ -12,7 +10,23 @@ from ecodonut.river_graph.constants import PollutionProfile, PROFILES
 from ecodonut.utils import get_closest_nodes, graph_to_gdf, polygons_to_linestring, rivers_dijkstra
 from ecodonut.utils.graph_utils import reproject_graph
 
+
 SECONDS_IN_YEAR = 365 * 24 * 3600
+
+RISK_LABELS = {
+    1: "Фон / следы загрязнения",
+    2: "Очень низкий риск загрязнения",
+    3: "Низкий риск загрязнения",
+    4: "Умеренно низкий риск загрязнения",
+    5: "Умеренный риск загрязнения",
+    6: "Повышенный риск загрязнения",
+    7: "Высокий риск загрязнения",
+    8: "Очень высокий риск загрязнения",
+    9: "Критический риск загрязнения",
+    10: "Экстремальный риск загрязнения",
+}
+
+RISK_THRESHOLDS = [0.001, 0.003, 0.01, 0.03, 0.07, 0.15, 0.30, 0.50, 0.75]
 
 
 def _mean_positive(arr) -> float:
@@ -78,7 +92,7 @@ def simulate_spill(
           - `geometry`: polygon geometry in a local projected CRS.
     """
     if ue_map is None:
-        ue_map = {1: 500_000, 2: 300_000, 3: 200_000, 4: 100_000}
+        ue_map = {1: 500_000, 2: 250_000, 3: 100_000, 4: 50_000}
     if profiles is None:
         profiles = PROFILES
 
@@ -165,11 +179,11 @@ def simulate_spill(
 
     for u, v, data in subgraph.edges(data=True):
         if u in remain_sum.index and v in remain_sum.index:
-            data["remain"] = float((remain_sum.loc[u] + remain_sum.loc[v]) / 2.0)
+            data["remain"] = round(float((remain_sum.loc[u] + remain_sum.loc[v]) / 2.0), 1)
             for c in conc_cols:
                 cu = float(conc_sum.loc[u, c]) if u in conc_sum.index and c in conc_sum.columns else 0.0
                 cv = float(conc_sum.loc[v, c]) if v in conc_sum.index and c in conc_sum.columns else 0.0
-                data[c] = float((cu + cv) / 2.0)
+                data[c] = round(float((cu + cv) / 2.0), 5)
         else:
             data["remain"] = 0.0
             for c in conc_cols:
@@ -207,4 +221,17 @@ def simulate_spill(
 
     joined["geometry"] = enclosures
     out = gpd.GeoDataFrame(joined.reset_index(drop=True), geometry="geometry", crs=local_crs)
-    return out
+
+    max_ue = float(max(ue_map.values())) if ue_map else float(out["remain"].max() or 1.0)
+    max_ue = max(max_ue, 1.0)
+
+    ratio = (out["remain"].astype(float) / max_ue).to_numpy()
+
+    out["pollution_class"] = (np.digitize(ratio, bins=np.array(RISK_THRESHOLDS), right=False) + 1).astype(int)
+    out["pollution_class"] = out["pollution_class"].map(RISK_LABELS)
+
+    needed_columns = ["name", "width", "length", "remain", "geometry", "pollution_class"]
+    existing_cols = [col for col in needed_columns if col in out.columns]
+    existing_cols += conc_cols if conc_cols else []
+
+    return out[existing_cols]
